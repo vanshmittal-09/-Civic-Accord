@@ -3,7 +3,7 @@
 // then the citizen confirms / disputes, or the 72h timer closes it as Uncontested.
 import { useState, useMemo, useEffect } from "react";
 import {
-  STATES, CLOSED_STATES, AUTO_CLOSE_MS, HOUR, PEOPLE, officerWarnings, MAX_OFFICER_WARNINGS,
+  STATES, CLOSED_STATES, AUTO_CLOSE_MS, HOUR, PEOPLE, officerWarnings, MAX_OFFICER_WARNINGS, WARNING_KINDS,
   checkTransition, useCivicLedger, useNow, verifyLedger,
 } from "./civicLedger";
 import {
@@ -276,10 +276,21 @@ function ClosedPanel({ c }) {
   );
 }
 
-function CaseDetail({ c, now, onPropose }) {
+function SuspendedPanel({ s }) {
+  return (
+    <section className="rounded-2xl bg-rose-50 p-5 ring-1 ring-rose-300">
+      <h3 className="text-lg font-semibold text-rose-900">You're suspended. You can't submit resolutions right now.</h3>
+      <p className="mt-1 text-sm text-rose-900/85">
+        You received more than {MAX_OFFICER_WARNINGS} warnings in a week. The suspension ends on {stamp(s.until)}, or earlier if a supervisor reinstates you.
+      </p>
+    </section>
+  );
+}
+
+function CaseDetail({ c, now, onPropose, suspended }) {
   let panel;
   if (c.state === STATES.SUBMITTED) {
-    panel = <ProposalForm key={c.id + c.events.length} c={c} now={now} onSubmit={(d) => onPropose(c, d)} />;
+    panel = suspended ? <SuspendedPanel s={suspended} /> : <ProposalForm key={c.id + c.events.length} c={c} now={now} onSubmit={(d) => onPropose(c, d)} />;
   } else if (c.state === STATES.REWORK) {
     panel = (
       <>
@@ -288,7 +299,7 @@ function CaseDetail({ c, now, onPropose }) {
           <p className="mt-1 text-sm leading-relaxed text-violet-900/85">{c.ruling.ruling}</p>
           <p className="mt-2 text-xs text-violet-900/60">{stamp(c.ruling.at)}</p>
         </section>
-        <ProposalForm key={c.id + c.events.length} c={c} now={now} isRework onSubmit={(d) => onPropose(c, d)} />
+        {suspended ? <SuspendedPanel s={suspended} /> : <ProposalForm key={c.id + c.events.length} c={c} now={now} isRework onSubmit={(d) => onPropose(c, d)} />}
       </>
     );
   } else if (c.state === STATES.PROPOSED) {
@@ -430,7 +441,7 @@ function OfficerScreen({ session, onSignOut }) {
                 { label: "Open", value: groups.action.length + groups.waiting.length + groups.review.length },
                 { label: "Completed", value: groups.closed.length },
                 { label: "Avg rating", value: (() => { const a = averageRating(groups.all); return a ? `${a.avg.toFixed(1)}★` : "–"; })() },
-                { label: "Warnings (7 days)", value: `${myWarnings.thisWeek.length}/${MAX_OFFICER_WARNINGS}` },
+                { label: "Warnings (7 days)", value: myWarnings.suspended ? "Suspended" : `${myWarnings.thisWeek.length}/${MAX_OFFICER_WARNINGS}` },
               ]}
             />
             <button type="button" onClick={onSignOut} className="rounded-full bg-white px-3 py-1 font-semibold text-[#0e4f4f] hover:bg-slate-100">
@@ -508,7 +519,7 @@ function OfficerScreen({ session, onSignOut }) {
               {/* detail */}
               <div>
                 {selected ? (
-                  <CaseDetail c={selected} now={now} onPropose={handlePropose} />
+                  <CaseDetail c={selected} now={now} onPropose={handlePropose} suspended={myWarnings.suspended} />
                 ) : (
                   <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Select a case.</p>
                 )}
@@ -611,25 +622,36 @@ function MyRatingPanel({ cases, onOpen }) {
 
 /* ---------------- supervisor warnings to this officer ---------------- */
 function MyWarnings({ w, onOpen }) {
-  if (!w.thisWeek.length) return null;
+  if (!w.thisWeek.length && !w.suspended) return null;
   const n = w.thisWeek.length;
+  const red = w.suspended || n >= MAX_OFFICER_WARNINGS;
   const daysLeft = (at) => Math.max(1, Math.ceil((at + 7 * 24 * 3600 * 1000 - Date.now()) / (24 * 3600 * 1000)));
   return (
-    <section role="alert" aria-labelledby="warn-title" className={`mt-6 rounded-2xl p-4 ring-1 ${w.escalated ? "bg-rose-50 ring-rose-300" : "bg-amber-50 ring-amber-300"}`}>
+    <section role="alert" aria-labelledby="warn-title" className={`mt-6 rounded-2xl p-4 ring-1 ${red ? "bg-rose-50 ring-rose-300" : "bg-amber-50 ring-amber-300"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="warn-title" className={`text-sm font-semibold ${w.escalated ? "text-rose-900" : "text-amber-950"}`}>
-          ⚠ You have {n} of {MAX_OFFICER_WARNINGS} warnings this week for rework not done properly
+        <h2 id="warn-title" className={`text-sm font-semibold ${red ? "text-rose-900" : "text-amber-950"}`}>
+          {w.suspended
+            ? `⛔ You are suspended until ${stamp(w.suspended.until)}`
+            : `⚠ You have ${n} of ${MAX_OFFICER_WARNINGS} warnings this week`}
         </h2>
-        <span className="text-xs text-slate-600">Warnings expire after 7 days</span>
+        <span className="text-xs text-slate-600">Max {MAX_OFFICER_WARNINGS} per week · warnings expire after 7 days</span>
       </div>
-      {w.escalated && (
-        <p className="mt-1 text-sm text-rose-800">You've reached {MAX_OFFICER_WARNINGS} warnings in 7 days. Your record has been escalated to the department head for review.</p>
-      )}
+      <p className={`mt-1 text-sm ${red ? "text-rose-800" : "text-amber-900"}`}>
+        {w.suspended
+          ? `You exceeded ${MAX_OFFICER_WARNINGS} warnings in a week, so you can't submit resolutions until the suspension ends or a supervisor reinstates you.`
+          : n >= MAX_OFFICER_WARNINGS
+            ? "You've reached the limit. One more warning this week will suspend you for 7 days."
+            : `Warnings are given for incomplete work or a tampered / fake proof photo. More than ${MAX_OFFICER_WARNINGS} in a week means suspension.`}
+      </p>
       <ul className="mt-3 space-y-2">
         {w.thisWeek.map((x, i) => (
           <li key={i}>
             <button type="button" onClick={() => onOpen(x.caseId)} className="w-full rounded-xl bg-white/80 px-3 py-2 text-left ring-1 ring-black/5 hover:ring-amber-400">
-              <p className="text-sm text-slate-800">“{x.reason}”</p>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${x.kind === "TAMPERED" ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-900"}`}>
+                {WARNING_KINDS[x.kind].label}
+              </span>
+              {x.suspends && <span className="ml-1 rounded-full bg-rose-600 px-2 py-0.5 text-[11px] font-bold text-white">Led to suspension</span>}
+              <p className="mt-1 text-sm text-slate-800">“{x.reason}”</p>
               <p className="mt-0.5 text-xs text-slate-500">Case #{x.caseId} · {x.by} · {stamp(x.at)} · expires in {daysLeft(x.at)} day{daysLeft(x.at) > 1 ? "s" : ""}</p>
             </button>
           </li>

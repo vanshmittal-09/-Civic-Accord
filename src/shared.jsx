@@ -25,7 +25,7 @@ export const EVENT_LABEL = {
   PROPOSE: "Resolution proposed",
   CONFIRM: "Citizen confirmed closure",
   RATE: "Resident rated the resolution",
-  WARN_OFFICER: "Supervisor warned the officer (rework not done properly)",
+  WARN_OFFICER: "Supervisor warned the officer",
   DISPUTE: "Citizen disputed the resolution",
   AUTO_CLOSE: "Auto-closed: no response in 72h",
   ORDER_REWORK: "Supervisor ordered rework",
@@ -188,7 +188,7 @@ export function Timeline({ c }) {
             {i < c.events.length - 1 && <span className="absolute left-[5px] top-4 h-[calc(100%+0.5rem)] w-px bg-slate-200" />}
             <span className="absolute left-0 top-1.5 h-[11px] w-[11px] rounded-full bg-teal-600 ring-4 ring-teal-100" />
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-              <p className="text-sm font-medium text-slate-900">{EVENT_LABEL[e.type] || e.type}</p>
+              <p className="text-sm font-medium text-slate-900">{EVENT_LABEL[e.type] || e.type}{e.type === "WARN_OFFICER" && e.data ? `: ${e.data.kind === "TAMPERED" ? "image tampered / fake photo" : "incomplete work"}${e.data.suspends ? " (officer suspended)" : ""}` : ""}</p>
               <p className="font-mono text-[11px] text-slate-400">#{e.seq} · {e.hash.slice(0, 10)}</p>
             </div>
             <p className="text-xs text-slate-500">{e.actorName} · {stamp(e.at)}</p>

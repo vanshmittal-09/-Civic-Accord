@@ -7,7 +7,7 @@ import { CLOUD, getSupabase } from "./supabase";
 
 export const HOUR = 60 * 60 * 1000;
 export const AUTO_CLOSE_MS = 72 * HOUR;
-const STORAGE_KEY = "civicaccord_ledger_v7"; // v7: officer warnings
+const STORAGE_KEY = "civicaccord_ledger_v8"; // v8: warning types + suspension
 const GENESIS = "0".repeat(64);
 
 // In-memory copy shared by every screen on the page. Used when browser storage is
@@ -39,8 +39,10 @@ export const ACTIONS = {
   UPHOLD:       { from: [STATES.CONTESTED],                to: STATES.REVIEWER_CLOSED, roles: ["SUPERVISOR"] },
   // a resident can rate a closed case once (state doesn't change)
   RATE:         { from: CLOSED_STATES,                     to: null,                   roles: ["CITIZEN"] },
-  // supervisor's formal warning when ordered rework wasn't done properly (state doesn't change)
+  // supervisor's formal warning to the officer: incomplete work or a tampered/fake photo (state doesn't change)
   WARN_OFFICER: { from: [STATES.CONTESTED],                to: null,                   roles: ["SUPERVISOR"] },
+  // supervisor lifts an officer's suspension early (not tied to a case; caseId is "officer-<id>")
+  REINSTATE_OFFICER: { from: [null],                       to: null,                   roles: ["SUPERVISOR"] },
 };
 
 const VERB = {
@@ -53,6 +55,7 @@ const VERB = {
   UPHOLD: "close this case",
   RATE: "rate this resolution",
   WARN_OFFICER: "warn the officer",
+  REINSTATE_OFFICER: "reinstate an officer",
 };
 
 export const PEOPLE = {
@@ -88,9 +91,6 @@ export function checkTransition(caseObj, action, role, actorId) {
   }
   if (role === "CITIZEN" && caseObj && caseObj.citizenId !== actorId) {
     return "Blocked: only the citizen who filed this case can respond to it.";
-  }
-  if (action === "WARN_OFFICER" && caseObj && !caseObj.events.some((e) => e.type === "ORDER_REWORK")) {
-    return "Warnings are only for cases where ordered rework wasn't done properly.";
   }
   if (action === "RATE" && caseObj && caseObj.rating) {
     return "You've already rated this resolution.";
@@ -136,18 +136,54 @@ export function deriveCases(events) {
   return [...byId.values()];
 }
 
-/* Officer warnings: at most 3 in any 7 days */
+/* Officer warnings: up to 3 in any 7 days. A warning beyond 3 suspends the officer for 7 days. */
 export const MAX_OFFICER_WARNINGS = 3;
 export const WARNING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const SUSPENSION_MS = WARNING_WINDOW_MS;
+export const WARNING_KINDS = {
+  INCOMPLETE: { label: "Incomplete work", short: "Incomplete" },
+  TAMPERED: { label: "Image tampered / fake photo", short: "Tampered image" },
+  POOR_REWORK: { label: "Incomplete work", short: "Incomplete" }, // older records
+};
 
-/** All warnings for an officer, newest first, plus those in the last 7 days. */
+/**
+ * An officer's warning record.
+ *  all        - every warning, newest first
+ *  thisWeek   - warnings in the last 7 days (since any reinstatement)
+ *  suspended  - { at, until, reason } while a suspension is in force, else null
+ */
 export function officerWarnings(events, officerId, now) {
+  let reinstatedAt = 0;
+  for (const e of events) {
+    if (e.type === "REINSTATE_OFFICER" && e.data && e.data.officerId === officerId) reinstatedAt = Math.max(reinstatedAt, e.at);
+  }
   const all = events
     .filter((e) => e.type === "WARN_OFFICER" && e.data && e.data.officerId === officerId)
-    .map((e) => ({ ...e.data, caseId: e.caseId, at: e.at, by: e.actorName }))
+    .map((e) => ({ ...e.data, kind: e.data.kind in WARNING_KINDS ? e.data.kind : "INCOMPLETE", caseId: e.caseId, at: e.at, by: e.actorName }))
     .sort((a, b) => b.at - a.at);
-  const thisWeek = all.filter((w) => now - w.at < WARNING_WINDOW_MS);
-  return { all, thisWeek, escalated: thisWeek.length >= MAX_OFFICER_WARNINGS };
+  const thisWeek = all.filter((w) => now - w.at < WARNING_WINDOW_MS && w.at > reinstatedAt);
+  const s = all.find((w) => w.suspends && w.at > reinstatedAt && now - w.at < SUSPENSION_MS);
+  const suspended = s ? { at: s.at, until: s.at + SUSPENSION_MS, reason: s.reason, by: s.by } : null;
+  return { all, thisWeek, suspended, reinstatedAt, escalated: !!suspended, full: thisWeek.length >= MAX_OFFICER_WARNINGS };
+}
+
+/** Rules that depend on the officer's record rather than one case. Returns [error, data]. */
+function officerRules(list, action, actor, data, now) {
+  if (action === "PROPOSE") {
+    const w = officerWarnings(list, actor.id, now);
+    if (w.suspended) return [`You are suspended until ${new Date(w.suspended.until).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} after exceeding ${MAX_OFFICER_WARNINGS} warnings in a week. You can't submit resolutions until then or until a supervisor reinstates you.`];
+  }
+  if (action === "WARN_OFFICER") {
+    if (!data || !(data.kind in WARNING_KINDS) || data.kind === "POOR_REWORK") return ["Choose the warning type: incomplete work or tampered image."];
+    if (!data.reason || data.reason.trim().length < 15) return ["Give a reason for the warning (at least 15 characters)."];
+    const w = officerWarnings(list, data.officerId, now);
+    if (w.suspended) return [`${data.officerName || "This officer"} is already suspended.`];
+    return [null, { ...data, suspends: w.thisWeek.length >= MAX_OFFICER_WARNINGS }];
+  }
+  if (action === "REINSTATE_OFFICER") {
+    if (!officerWarnings(list, data && data.officerId, now).suspended) return ["This officer isn't suspended."];
+  }
+  return [null, data];
 }
 
 /* ------------------------------------------------------------------ */
@@ -534,8 +570,10 @@ export function useCivicLedger(now) {
           const current = deriveCases(list).find((c) => c.id === caseId) || null;
           const err = checkTransition(current, action, actor.role, actor.id);
           if (err) throw new Error(err);
+          const [ruleErr, checked] = officerRules(list, action, actor, data, Date.now());
+          if (ruleErr) throw new Error(ruleErr);
           const sealed = await seal(
-            { caseId, type: action, actorId: actor.id, actorName: actor.name, role: actor.role, at: now, data },
+            { caseId, type: action, actorId: actor.id, actorName: actor.name, role: actor.role, at: now, data: checked },
             list[list.length - 1]
           );
           const sb = cloudRef.current;
