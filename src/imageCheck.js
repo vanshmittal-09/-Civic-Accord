@@ -192,7 +192,8 @@ export async function detectAiOnline(src) {
   if (error || !data || typeof data.aiGenerated !== "number") {
     throw new Error((data && data.error) || "Online AI check isn't set up yet (deploy the detect-ai-image function).");
   }
-  return data;
+  return { aiGenerated: data.aiGenerated, provider: data.provider || "online" };
 }
 
 export const ONLINE_AI_CHECK = CLOUD;
+export const PROVIDER_NAME = { hive: "Hive AI Detector", "hive-nvidia": "Hive AI Detector", sightengine: "Sightengine", online: "AI detector", local: "AI detector (offline check)" };

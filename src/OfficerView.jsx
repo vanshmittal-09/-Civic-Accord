@@ -17,10 +17,10 @@ const MAX_PHOTO_AGE_MS = 24 * HOUR;
 const MAX_PHOTOS = 4;
 
 /* ---------------- resolution proposal form ---------------- */
-function ProposalForm({ c, now, onSubmit, isRework }) {
+function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
   const [photos, setPhotos] = useState([]);
   const [photoErr, setPhotoErr] = useState("");
-  const guard = usePhotoGuard({ id: ME.id, name: ME.name, role: ME.role });
+  const guard = usePhotoGuard({ id: ME.id, name: ME.name, role: ME.role }, { onFlag: (flagged) => onAiFlag(c, flagged) });
   const [note, setNote] = useState("");
   const [checks, setChecks] = useState(() => Object.fromEntries(CHECKS.map((c) => [c.key, false])));
   const [busy, setBusy] = useState(false);
@@ -287,10 +287,10 @@ function SuspendedPanel({ s }) {
   );
 }
 
-function CaseDetail({ c, now, onPropose, suspended }) {
+function CaseDetail({ c, now, onPropose, suspended, onAiFlag }) {
   let panel;
   if (c.state === STATES.SUBMITTED) {
-    panel = suspended ? <SuspendedPanel s={suspended} /> : <ProposalForm key={c.id + c.events.length} c={c} now={now} onSubmit={(d) => onPropose(c, d)} />;
+    panel = suspended ? <SuspendedPanel s={suspended} /> : <ProposalForm key={c.id} c={c} now={now} onSubmit={(d) => onPropose(c, d)} onAiFlag={onAiFlag} />;
   } else if (c.state === STATES.REWORK) {
     panel = (
       <>
@@ -299,7 +299,7 @@ function CaseDetail({ c, now, onPropose, suspended }) {
           <p className="mt-1 text-sm leading-relaxed text-violet-900/85">{c.ruling.ruling}</p>
           <p className="mt-2 text-xs text-violet-900/60">{stamp(c.ruling.at)}</p>
         </section>
-        {suspended ? <SuspendedPanel s={suspended} /> : <ProposalForm key={c.id + c.events.length} c={c} now={now} isRework onSubmit={(d) => onPropose(c, d)} />}
+        {suspended ? <SuspendedPanel s={suspended} /> : <ProposalForm key={c.id} c={c} now={now} isRework onSubmit={(d) => onPropose(c, d)} onAiFlag={onAiFlag} />}
       </>
     );
   } else if (c.state === STATES.PROPOSED) {
@@ -396,6 +396,19 @@ function OfficerScreen({ session, onSignOut }) {
     } catch (err) {
       setToast({ ok: false, text: err.message });
     }
+  }
+
+  // The AI detector rejected one of my work-completion photos: record it in the ledger so the
+  // supervisor sees it; it counts as a tampered-image warning (more than 3 a week = suspension).
+  async function handleAiFlag(c, flagged) {
+    const before = officerWarnings(events, ME.id, Date.now());
+    try {
+      await dispatch(c.id, "AI_FLAG", PEOPLE.aicheck, {
+        officerId: ME.id, officerName: ME.name, reason: flagged.reason,
+        score: flagged.score, provider: flagged.provider,
+      });
+    } catch { /* still rejected locally even if the record fails */ }
+    return { count: before.thisWeek.length + 1, suspended: !before.suspended && before.thisWeek.length >= MAX_OFFICER_WARNINGS };
   }
 
   async function handleVerify() {
@@ -520,7 +533,7 @@ function OfficerScreen({ session, onSignOut }) {
               {/* detail */}
               <div>
                 {selected ? (
-                  <CaseDetail c={selected} now={now} onPropose={handlePropose} suspended={myWarnings.suspended} />
+                  <CaseDetail c={selected} now={now} onPropose={handlePropose} suspended={myWarnings.suspended} onAiFlag={handleAiFlag} />
                 ) : (
                   <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Select a case.</p>
                 )}
@@ -686,6 +699,7 @@ function MyWarningsPanel({ w, now, onOpen }) {
                     <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${x.kind === "TAMPERED" ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-900"}`}>
                       {WARNING_KINDS[x.kind].label}
                     </span>
+                    {x.auto && <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-800">AI detector</span>}
                     {x.suspends && <span className="rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">Led to suspension</span>}
                     <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${live ? "bg-sky-50 text-sky-800" : "bg-slate-200 text-slate-600"}`}>
                       {live ? `Expires in ${daysLeft(x.at)}d` : "Expired"}

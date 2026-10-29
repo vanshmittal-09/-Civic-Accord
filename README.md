@@ -58,28 +58,31 @@ If the database can't be reached (no internet, wrong keys), the app shows a yell
 
 > ⚠️ Before real use: remove the `reset_demo` function from the database (anyone using the app can call it), move officer and supervisor accounts out of the code into the database, and store photos in Supabase Storage instead of inside the ledger.
 
-## AI photo check (supervisor)
+## AI photo check (Hive AI Detector)
 
 When a dispute reaches the supervisor, **AI photo check** reviews every photo in the case and gives each one an advisory verdict: *Looks like a real camera photo*, *Needs a closer look*, or *Likely AI-generated or edited*, with the reasons.
 
 - **Built-in checks (no setup):** when a photo is taken, before its metadata is stripped, the app keeps only the camera make/model, the capture time and any editing software, and looks for traces AI tools leave in files (Midjourney, DALL·E, Stable Diffusion settings, the IPTC "made by AI" tag, common AI image sizes). Location is never kept.
-- **Optional AI detection model:** a Supabase Edge Function sends the photo to [Sightengine](https://sightengine.com/docs/ai-generated-image-detection)'s AI-generated image detector and shows a 0–100% score. To turn it on:
-  1. Create a free Sightengine account and copy your API user and API secret.
+- **Hive AI Detector (recommended):** a Supabase Edge Function (`supabase/functions/detect-ai-image`) sends each photo to [Hive's AI-generated image detection](https://docs.thehive.ai/docs/ai-image-and-video-detection) and returns a 0–100% "AI-generated" score. The key stays on the server. To turn it on:
+  1. Get a Hive API key for the AI-Generated Image Detection model.
   2. Install the [Supabase CLI](https://supabase.com/docs/guides/cli), then in this folder run:
      ```bash
      supabase login
      supabase link --project-ref YOUR-PROJECT-ID
-     supabase secrets set SIGHTENGINE_API_USER=your-user SIGHTENGINE_API_SECRET=your-secret
+     supabase secrets set HIVE_API_KEY=your-hive-key
      supabase functions deploy detect-ai-image
      ```
-  3. In the app, the supervisor clicks **Run AI detection model** under any photo.
+     Optional: `HIVE_API_URL` (default `https://api.thehive.ai/api/v2/task/sync`) and `HIVE_AUTH_SCHEME` (`Token` by default, or `Bearer`) if your Hive project uses the newer v3 endpoint. Alternatives: `NVIDIA_API_KEY` uses Hive's model through NVIDIA NIM, and `SIGHTENGINE_API_USER` / `SIGHTENGINE_API_SECRET` use Sightengine.
+  3. The supervisor can also click **Run AI detection model** under any photo in a dispute.
 
-> No detector is perfect. The check is advice for the supervisor's ruling, never an automatic decision.
+> No detector is perfect. Scores of 70% or more are treated as AI-generated; keep a human appeal route (helpline / supervisor).
 
-### Upload screening and warnings
+### Upload screening, warnings and suspension
 
-Every photo a resident or officer uploads is screened the moment it's added (`src/photoGuard.js`), using the same checks plus the detection model when it's deployed.
-Real photos are added silently. An AI-generated photo is rejected with a warning ("Warning 1 of 3"). After **3 warnings** the account can't upload photos until a supervisor clears it from **Flagged accounts**. With Supabase connected, warnings are stored in the `photo_warnings` table, so they follow the person to any device.
+Every photo is screened the moment it's added (`src/photoGuard.js`): the built-in checks plus the Hive detector when it's deployed. Real photos are added silently.
+
+- **Residents (complaint and dispute photos):** an AI-generated photo is rejected, so the complaint can't be submitted with it, and the resident gets "Warning n of 3". At **3 warnings the account is suspended**: no new complaints or disputes until the helpline or a supervisor lifts it from **Resident accounts flagged**. Warnings are stored in the `photo_warnings` table when Supabase is connected.
+- **Officers (work-completion photos):** an AI-generated photo is rejected and recorded in the audit ledger (`AI_FLAG`) as a *tampered-image* warning. The supervisor sees it straight away (alert at the top, a badge on the case, the case history and the **Warnings issued** column). It counts toward the officer's limit of 3 warnings a week; one more suspends the officer for 7 days.
 
 ## How it works
 

@@ -9,7 +9,7 @@
 //
 // Warnings are stored in Supabase (table photo_warnings) when connected, otherwise in this browser.
 import { CLOUD, getSupabase } from "./supabase";
-import { readPhotoSignals, assessPhoto, detectAiOnline } from "./imageCheck";
+import { readPhotoSignals, assessPhoto, detectAiOnline, PROVIDER_NAME } from "./imageCheck";
 
 export const MAX_WARNINGS = 3;
 const AI_SCORE_LIMIT = 0.7; // detection model score at or above this counts as AI-generated
@@ -27,6 +27,10 @@ function loadLocal() {
 function saveLocal(all) {
   memory = all;
   try { localStorage.setItem(LOCAL_KEY, JSON.stringify(all)); } catch { /* memory only */ }
+}
+/** Lets every screen showing an account's status refresh when warnings change. */
+function announce() {
+  try { window.dispatchEvent(new Event("photoguard:change")); } catch { /* not in a browser */ }
 }
 
 const fromRow = (r) => ({
@@ -56,11 +60,12 @@ async function addWarning(uploader, reason, score) {
     const { error } = await sb.from("photo_warnings").insert({
       user_id: entry.userId, user_name: entry.userName, role: entry.role, reason: entry.reason, score: entry.score,
     });
-    if (!error) return getWarnings(uploader.id);
+    if (!error) { announce(); return getWarnings(uploader.id); }
   }
   const all = loadLocal();
   all[uploader.id] = [...(all[uploader.id] || []), entry];
   saveLocal(all);
+  announce();
   return all[uploader.id];
 }
 
@@ -88,11 +93,12 @@ export async function clearWarnings(userId) {
   const sb = await cloud();
   if (sb) {
     const { error } = await sb.rpc("clear_photo_warnings", { p_user: userId });
-    if (!error) return;
+    if (!error) { announce(); return; }
   }
   const all = loadLocal();
   delete all[userId];
   saveLocal(all);
+  announce();
 }
 
 /* ---------------- screening ---------------- */
@@ -105,26 +111,33 @@ export async function screenPhoto(file, src) {
   const signals = await readPhotoSignals(file);
   const local = assessPhoto({ src, signals });
   let score = null;
+  let provider = "local";
   if (CLOUD) {
-    try { score = (await withTimeout(detectAiOnline(src), 10000)).aiGenerated; } catch { score = null; }
+    try {
+      const r = await withTimeout(detectAiOnline(src), 10000);
+      score = r.aiGenerated;
+      provider = r.provider;
+    } catch { score = null; }
   }
   const hasAiTraces = Boolean(signals && signals.aiMarkers && signals.aiMarkers.length);
   const isAi = hasAiTraces || (score != null ? score >= AI_SCORE_LIMIT : local.level === "high");
-  const reason = hasAiTraces
-    ? `AI-tool traces in the file (${signals.aiMarkers.join(", ")})`
-    : score != null
-      ? `AI detection model: ${Math.round(score * 100)}% likely AI-generated`
-      : "Several signs of an AI-generated image";
-  return { isAi, signals, score, reason };
+  const detector = PROVIDER_NAME[provider] || "AI detector";
+  const reason = score != null && score >= AI_SCORE_LIMIT
+    ? `${detector}: ${Math.round(score * 100)}% likely AI-generated`
+    : hasAiTraces
+      ? `AI-tool traces in the file (${signals.aiMarkers.join(", ")})`
+      : `${detector}: several signs of an AI-generated image`;
+  return { isAi, signals, score, reason, provider, detector };
 }
 
 /**
  * Screens one upload for an account.
  * Returns { ok: true, signals } for a real photo, or { ok: false, count, locked, reason } when rejected.
  */
-export async function guardUpload(file, src, uploader) {
+export async function guardUpload(file, src, uploader, { record = true } = {}) {
   const result = await screenPhoto(file, src);
   if (!result.isAi || !uploader) return { ok: true, signals: result.signals };
+  if (!record) return { ok: false, flagged: result }; // caller records it (officers: in the audit ledger)
   const list = await addWarning(uploader, result.reason, result.score);
-  return { ok: false, count: list.length, locked: list.length >= MAX_WARNINGS, reason: result.reason };
+  return { ok: false, count: list.length, locked: list.length >= MAX_WARNINGS, reason: result.reason, flagged: result };
 }

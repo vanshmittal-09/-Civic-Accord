@@ -7,7 +7,7 @@ import { CLOUD, getSupabase } from "./supabase";
 
 export const HOUR = 60 * 60 * 1000;
 export const AUTO_CLOSE_MS = 72 * HOUR;
-const STORAGE_KEY = "civicaccord_ledger_v8"; // v8: warning types + suspension
+const STORAGE_KEY = "civicaccord_ledger_v9"; // v9: AI photo flags
 const GENESIS = "0".repeat(64);
 
 // In-memory copy shared by every screen on the page. Used when browser storage is
@@ -41,6 +41,8 @@ export const ACTIONS = {
   RATE:         { from: CLOSED_STATES,                     to: null,                   roles: ["CITIZEN"] },
   // supervisor's formal warning to the officer: incomplete work or a tampered/fake photo (state doesn't change)
   WARN_OFFICER: { from: [STATES.CONTESTED],                to: null,                   roles: ["SUPERVISOR"] },
+  // the AI detector rejected an officer's work-completion photo: counts as a tampered-image warning
+  AI_FLAG:      { from: [STATES.SUBMITTED, STATES.REWORK, STATES.PROPOSED, STATES.CONTESTED], to: null, roles: ["SYSTEM"] },
   // supervisor lifts an officer's suspension early (not tied to a case; caseId is "officer-<id>")
   REINSTATE_OFFICER: { from: [null],                       to: null,                   roles: ["SUPERVISOR"] },
 };
@@ -56,6 +58,7 @@ const VERB = {
   RATE: "rate this resolution",
   WARN_OFFICER: "warn the officer",
   REINSTATE_OFFICER: "reinstate an officer",
+  AI_FLAG: "flag an AI-generated photo",
 };
 
 export const PEOPLE = {
@@ -71,6 +74,7 @@ export const PEOPLE = {
   damodar: { id: "damodar", name: "Officer Damodar",  role: "OFFICER" },
   patel:   { id: "patel",   name: "Supervisor Patel", role: "SUPERVISOR" },
   system:  { id: "system",  name: "System (72h timer)", role: "SYSTEM" },
+  aicheck: { id: "aicheck", name: "Hive AI Detector", role: "SYSTEM" },
 };
 
 /** Returns null if allowed, otherwise a human-readable reason. */
@@ -132,6 +136,7 @@ export function deriveCases(events) {
     if (e.type === "AUTO_CLOSE") c.autoClose = e.data;
     if (e.type === "ORDER_REWORK") c.reworkCount = (c.reworkCount || 0) + 1;
     if (e.type === "WARN_OFFICER") c.warnings = [...(c.warnings || []), { ...e.data, at: e.at, by: e.actorName }];
+    if (e.type === "AI_FLAG") c.aiFlags = [...(c.aiFlags || []), { ...e.data, at: e.at, by: e.actorName }];
   }
   return [...byId.values()];
 }
@@ -158,8 +163,8 @@ export function officerWarnings(events, officerId, now) {
     if (e.type === "REINSTATE_OFFICER" && e.data && e.data.officerId === officerId) reinstatedAt = Math.max(reinstatedAt, e.at);
   }
   const all = events
-    .filter((e) => e.type === "WARN_OFFICER" && e.data && e.data.officerId === officerId)
-    .map((e) => ({ ...e.data, kind: e.data.kind in WARNING_KINDS ? e.data.kind : "INCOMPLETE", caseId: e.caseId, at: e.at, by: e.actorName }))
+    .filter((e) => (e.type === "WARN_OFFICER" || e.type === "AI_FLAG") && e.data && e.data.officerId === officerId)
+    .map((e) => ({ ...e.data, kind: e.data.kind in WARNING_KINDS ? e.data.kind : "INCOMPLETE", caseId: e.caseId, at: e.at, by: e.actorName, auto: e.type === "AI_FLAG" }))
     .sort((a, b) => b.at - a.at);
   const thisWeek = all.filter((w) => now - w.at < WARNING_WINDOW_MS && w.at > reinstatedAt);
   const s = all.find((w) => w.suspends && w.at > reinstatedAt && now - w.at < SUSPENSION_MS);
@@ -179,6 +184,10 @@ function officerRules(list, action, actor, data, now) {
     const w = officerWarnings(list, data.officerId, now);
     if (w.suspended) return [`${data.officerName || "This officer"} is already suspended.`];
     return [null, { ...data, suspends: w.thisWeek.length >= MAX_OFFICER_WARNINGS }];
+  }
+  if (action === "AI_FLAG") {
+    const w = officerWarnings(list, data.officerId, now);
+    return [null, { ...data, kind: "TAMPERED", suspends: !w.suspended && w.thisWeek.length >= MAX_OFFICER_WARNINGS }];
   }
   if (action === "REINSTATE_OFFICER") {
     if (!officerWarnings(list, data && data.officerId, now).suspended) return ["This officer isn't suspended."];

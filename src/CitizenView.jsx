@@ -5,8 +5,9 @@ import { useState, useMemo, useEffect } from "react";
 import { STATES, CLOSED_STATES, AUTO_CLOSE_MS, PEOPLE, useCivicLedger, useNow } from "./civicLedger";
 import {
   dur, ago, stamp, EvidencePhoto, StarRating, StarPicker, RatingCard, RATING_WORDS, CaseTimer, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
-  PhotoPicker, TopBar, AccessDenied, SiteFooter,
+  PhotoPicker, TopBar, AccessDenied, SiteFooter, usePhotoGuard, SUPPORT,
 } from "./shared";
+import { MAX_WARNINGS } from "./photoGuard";
 
 // Issue types residents can choose from, grouped by department
 const ISSUE_GROUPS = [
@@ -73,6 +74,7 @@ function CitizenScreen({ session, onSignOut }) {
   const { ready, cases, dispatch, storageWarning } = useCivicLedger(now);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view"); // "view" | "report"
+  const account = usePhotoGuard(me); // AI-photo warnings: 3 = account suspended
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
@@ -141,6 +143,20 @@ function CitizenScreen({ session, onSignOut }) {
           <p className="py-20 text-center text-slate-500">Loading…</p>
         ) : (
           <>
+            {account.locked && (
+              <section role="alert" className="mb-6 rounded-2xl bg-rose-50 px-5 py-4 ring-1 ring-rose-300">
+                <p className="font-semibold text-rose-900">⛔ Your account is suspended</p>
+                <p className="mt-1 text-sm text-rose-800">
+                  You received {MAX_WARNINGS} warnings for uploading AI-generated photos, so you can't report issues or dispute resolutions.
+                  You can still view your complaints and confirm work. To restore your account, call {SUPPORT.phone} or email {SUPPORT.email}.
+                </p>
+              </section>
+            )}
+            {!account.locked && account.count > 0 && mode === "view" && (
+              <p role="status" className="mb-4 rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-950 ring-1 ring-amber-300">
+                ⚠ You have {account.count} of {MAX_WARNINGS} warnings for uploading AI-generated photos. At {MAX_WARNINGS}, your account is suspended.
+              </p>
+            )}
             {needsAction.length > 0 && mode === "view" && (
               <button
                 type="button"
@@ -161,9 +177,10 @@ function CitizenScreen({ session, onSignOut }) {
                 <button
                   type="button"
                   onClick={() => setMode("report")}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3b2a7a] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#2e2061]"
+                  disabled={account.locked}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3b2a7a] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#2e2061] disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
-                  + Report an issue
+                  {account.locked ? "Reporting suspended" : "+ Report an issue"}
                 </button>
                 <h2 className="px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-500">My complaints ({mine.length})</h2>
                 {mine.length === 0 && (
@@ -198,10 +215,10 @@ function CitizenScreen({ session, onSignOut }) {
                     <button type="button" onClick={() => setMode("view")} className="mb-3 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[#3b2a7a] hover:bg-violet-50">
                       ← Back to my complaints
                     </button>
-                    <ReportForm onCancel={() => setMode("view")} onSubmit={submitReport} uploader={me} />
+                    <ReportForm onCancel={() => setMode("view")} onSubmit={submitReport} uploader={me} suspended={account.locked} />
                   </>
                 ) : selected ? (
-                  <CaseDetail key={selected.id} c={selected} now={now} act={act} me={me} />
+                  <CaseDetail key={selected.id} c={selected} now={now} act={act} me={me} suspended={account.locked} />
                 ) : (
                   <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Report an issue to get started.</p>
                 )}
@@ -225,13 +242,13 @@ function CitizenScreen({ session, onSignOut }) {
 }
 
 /* ---------------- report a problem ---------------- */
-function ReportForm({ onSubmit, onCancel, uploader }) {
+function ReportForm({ onSubmit, onCancel, uploader, suspended }) {
   const [category, setCategory] = useState(ISSUE_GROUPS[0].items[0]);
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
   const [photos, setPhotos] = useState([]);
   const [busy, setBusy] = useState(false);
-  const valid = location.trim().length >= 3 && description.trim().length >= 15 && photos.length > 0;
+  const valid = !suspended && location.trim().length >= 3 && description.trim().length >= 15 && photos.length > 0;
 
   async function submit(e) {
     e.preventDefault();
@@ -284,7 +301,7 @@ function ReportForm({ onSubmit, onCancel, uploader }) {
 }
 
 /* ---------------- case detail ---------------- */
-function CaseDetail({ c, now, act, me }) {
+function CaseDetail({ c, now, act, me, suspended }) {
   const [disputing, setDisputing] = useState(false);
   const [confirming, setConfirming] = useState(false); // shows the rate-and-confirm form
 
@@ -329,13 +346,14 @@ function CaseDetail({ c, now, act, me }) {
             >
               ✓ Yes, it's fixed: confirm closure
             </button>
-            <button type="button" onClick={() => setDisputing(true)} className="rounded-xl bg-white px-4 py-3.5 text-sm font-semibold text-rose-700 ring-2 ring-rose-300 hover:bg-rose-50">
+            <button type="button" onClick={() => setDisputing(true)} disabled={suspended} title={suspended ? "Your account is suspended" : undefined} className="rounded-xl bg-white px-4 py-3.5 text-sm font-semibold text-rose-700 ring-2 ring-rose-300 hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:ring-slate-200">
               ✗ Not fixed: dispute
             </button>
           </div>
         ) : (
           <DisputeForm
             uploader={me}
+            suspended={suspended}
             onCancel={() => setDisputing(false)}
             onSubmit={(d) => act(c.id, "DISPUTE", d, `Dispute sent. Supervisor Patel will review #${c.id}.`)}
           />
@@ -415,11 +433,11 @@ function CaseDetail({ c, now, act, me }) {
   );
 }
 
-function DisputeForm({ onSubmit, onCancel, uploader }) {
+function DisputeForm({ onSubmit, onCancel, uploader, suspended }) {
   const [note, setNote] = useState("");
   const [photos, setPhotos] = useState([]);
   const [busy, setBusy] = useState(false);
-  const valid = note.trim().length >= 20 && photos.length > 0;
+  const valid = !suspended && note.trim().length >= 20 && photos.length > 0;
 
   async function submit(e) {
     e.preventDefault();

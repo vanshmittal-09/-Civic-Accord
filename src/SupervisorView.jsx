@@ -123,6 +123,8 @@ function SupervisorScreen({ session, onSignOut }) {
           <p className="py-20 text-center text-slate-500">Loading…</p>
         ) : (
           <>
+            <AiFlagAlert events={events} now={now} onOpen={(id) => { const k = Object.keys(groups).find((t) => groups[t].some((x) => x.id === id)); if (k) { setTab(k); setSelectedId(id); } }} />
+
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4" role="tablist">
               {TABS.map((t) => {
                 const active = tab === t.key;
@@ -169,6 +171,11 @@ function SupervisorScreen({ session, onSignOut }) {
                         {c.state === STATES.CONTESTED ? `Disputed by ${c.citizenName} on ${stamp(c.disputedAt)}` : `Updated on ${stamp(c.updatedAt)}`}
                       </p>
                       <div className="mt-2"><CaseTimer c={c} /></div>
+                      {c.aiFlags && c.aiFlags.length > 0 && (
+                        <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-bold text-violet-800">
+                          🤖 AI photo flagged ×{c.aiFlags.length}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -200,6 +207,24 @@ function SupervisorScreen({ session, onSignOut }) {
         </div>
       )}
     </div>
+  );
+}
+
+function AiFlagAlert({ events, now, onOpen }) {
+  const recent = events
+    .filter((e) => e.type === "AI_FLAG" && now - e.at < 7 * 24 * 3600 * 1000)
+    .sort((a, b) => b.at - a.at);
+  if (!recent.length) return null;
+  return (
+    <section role="status" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-violet-50 px-4 py-3 ring-1 ring-violet-300">
+      <p className="text-sm text-violet-950">
+        <b>🤖 AI detector:</b> {recent.length === 1 ? "1 officer photo was" : `${recent.length} officer photos were`} rejected as AI-generated this week.
+        Latest: case #{recent[0].caseId}, {stamp(recent[0].at)}.
+      </p>
+      <button type="button" onClick={() => onOpen(recent[0].caseId)} className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-violet-800 ring-1 ring-violet-300 hover:bg-violet-100">
+        Open case #{recent[0].caseId}
+      </button>
+    </section>
   );
 }
 
@@ -309,6 +334,7 @@ function WarningsColumn({ w, officer, now, onOpen, onReinstate }) {
                     <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${tampered ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-900"}`}>
                       {WARNING_KINDS[x.kind].short}
                     </span>
+                    {x.auto && <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-800">AI detector</span>}
                     {x.suspends && <span className="rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">Suspended</span>}
                     {!live && <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">Expired</span>}
                   </div>
@@ -349,6 +375,20 @@ function CaseDetail({ c, now, onRule, officerWarn }) {
           <StatusBadge state={c.state} />
         </div>
       </Card>
+
+      {c.aiFlags && c.aiFlags.length > 0 && (
+        <section role="alert" className="rounded-2xl bg-violet-50 p-4 ring-1 ring-violet-300">
+          <p className="text-sm font-semibold text-violet-950">🤖 The AI detector rejected {c.aiFlags.length === 1 ? "an officer photo" : `${c.aiFlags.length} officer photos`} on this case</p>
+          <p className="mt-0.5 text-xs text-violet-900/80">The photo was not attached. Each rejection is recorded as a tampered-image warning for the officer.</p>
+          <ul className="mt-2 space-y-1">
+            {c.aiFlags.map((f, i) => (
+              <li key={i} className="text-xs text-violet-950">
+                {stamp(f.at)} · {f.officerName} · {f.reason}{f.suspends ? " · officer suspended" : ""}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {contested ? (
         <>
@@ -647,7 +687,8 @@ function FlaggedAccounts() {
   useEffect(() => {
     load();
     const t = setInterval(load, 15000); // pick up new warnings from other screens and devices
-    return () => clearInterval(t);
+    window.addEventListener("photoguard:change", load);
+    return () => { clearInterval(t); window.removeEventListener("photoguard:change", load); };
   }, []);
 
   async function clear(userId) {
@@ -660,10 +701,10 @@ function FlaggedAccounts() {
   return (
     <Card className="!p-4">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold">Flagged accounts</h3>
+        <h3 className="text-sm font-semibold">Resident accounts flagged</h3>
         <button type="button" onClick={load} className="text-xs font-semibold text-sky-700 hover:underline">Refresh</button>
       </div>
-      <p className="text-xs text-slate-500">Accounts warned for uploading AI-generated photos. {MAX_WARNINGS} warnings block uploads.</p>
+      <p className="text-xs text-slate-500">Residents warned by the AI detector for AI-generated complaint photos. {MAX_WARNINGS} warnings suspend the account.</p>
       {rows === null && <p className="mt-3 text-xs text-slate-500">Loading…</p>}
       {rows && rows.length === 0 && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 ring-1 ring-slate-200">No warnings so far.</p>}
       {rows && rows.length > 0 && (
@@ -678,14 +719,14 @@ function FlaggedAccounts() {
                     <p className="text-[11px] text-slate-500">{r.role === "OFFICER" ? "Officer" : "Resident"} · last {stamp(r.last)}</p>
                   </div>
                   <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${blocked ? "bg-rose-600 text-white" : "bg-amber-200 text-amber-950"}`}>
-                    {blocked ? "Blocked" : `${r.count}/${MAX_WARNINGS} warnings`}
+                    {blocked ? "Suspended" : `${r.count}/${MAX_WARNINGS} warnings`}
                   </span>
                 </div>
                 <button
                   type="button" onClick={() => clear(r.userId)}
                   className={`mt-1.5 text-xs font-semibold ${confirm === r.userId ? "text-rose-700" : "text-sky-700"} hover:underline`}
                 >
-                  {confirm === r.userId ? "Click again to clear warnings" : blocked ? "Clear warnings and unblock" : "Clear warnings"}
+                  {confirm === r.userId ? "Click again to confirm" : blocked ? "Lift suspension" : "Clear warnings"}
                 </button>
               </li>
             );

@@ -26,6 +26,7 @@ export const EVENT_LABEL = {
   CONFIRM: "Citizen confirmed closure",
   RATE: "Resident rated the resolution",
   WARN_OFFICER: "Supervisor warned the officer",
+  AI_FLAG: "AI detector rejected an officer photo as AI-generated",
   DISPUTE: "Citizen disputed the resolution",
   AUTO_CLOSE: "Auto-closed: no response in 72h",
   ORDER_REWORK: "Supervisor ordered rework",
@@ -188,7 +189,7 @@ export function Timeline({ c }) {
             {i < c.events.length - 1 && <span className="absolute left-[5px] top-4 h-[calc(100%+0.5rem)] w-px bg-slate-200" />}
             <span className="absolute left-0 top-1.5 h-[11px] w-[11px] rounded-full bg-teal-600 ring-4 ring-teal-100" />
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-              <p className="text-sm font-medium text-slate-900">{EVENT_LABEL[e.type] || e.type}{e.type === "WARN_OFFICER" && e.data ? `: ${e.data.kind === "TAMPERED" ? "image tampered / fake photo" : "incomplete work"}${e.data.suspends ? " (officer suspended)" : ""}` : ""}</p>
+              <p className="text-sm font-medium text-slate-900">{EVENT_LABEL[e.type] || e.type}{e.type === "WARN_OFFICER" && e.data ? `: ${e.data.kind === "TAMPERED" ? "image tampered / fake photo" : "incomplete work"}${e.data.suspends ? " (officer suspended)" : ""}` : ""}{e.type === "AI_FLAG" && e.data ? ` · tampered-image warning${e.data.suspends ? ", officer suspended" : ""}` : ""}</p>
               <p className="font-mono text-[11px] text-slate-400">#{e.seq} · {e.hash.slice(0, 10)}</p>
             </div>
             <p className="text-xs text-slate-500">{e.actorName} · {stamp(e.at)}</p>
@@ -871,23 +872,43 @@ export function CaseTimer({ c }) {
 
 /* ---------------- AI-photo screening on upload (shared by every form) ---------------- */
 /** Screens uploads for one account. Real photos pass silently; AI photos get a warning (max 3). */
-export function usePhotoGuard(uploader) {
+/**
+ * AI-photo screening for one uploader.
+ * Residents: warnings are stored per account; at MAX_WARNINGS the account is suspended
+ *            (no new complaints or disputes until the helpline/supervisor lifts it).
+ * Officers:  pass { onFlag, suspended } — each flag goes into the audit ledger as a
+ *            tampered-image warning, which the supervisor sees and which counts toward suspension.
+ */
+export function usePhotoGuard(uploader, opts = {}) {
   const [count, setCount] = useState(0);
   const [notice, setNotice] = useState(null);
   const uid = uploader && uploader.id;
+  const ledgerMode = typeof opts.onFlag === "function";
   useEffect(() => {
+    if (!uid || ledgerMode) return;
     let alive = true;
-    if (uid) getWarnings(uid).then((w) => { if (alive) setCount(w.length); }).catch(() => {});
-    return () => { alive = false; };
-  }, [uid]);
-  const locked = count >= MAX_WARNINGS;
+    const load = () => getWarnings(uid).then((w) => { if (alive) setCount(w.length); }).catch(() => {});
+    load();
+    window.addEventListener("photoguard:change", load);
+    return () => { alive = false; window.removeEventListener("photoguard:change", load); };
+  }, [uid, ledgerMode]);
+  const locked = ledgerMode ? Boolean(opts.suspended) : count >= MAX_WARNINGS;
   async function check(file, src) {
     if (!uploader) return { ok: true, signals: await readPhotoSignals(file) };
-    if (count >= MAX_WARNINGS) return { ok: false, locked: true };
+    if (locked) return { ok: false, locked: true };
+    if (ledgerMode) {
+      const r = await guardUpload(file, src, uploader, { record: false });
+      if (!r.ok) {
+        const info = (await opts.onFlag(r.flagged)) || {};
+        setNotice({ officer: true, reason: r.flagged.reason, detector: r.flagged.detector, count: info.count, suspended: info.suspended });
+        return { ok: false, locked: Boolean(info.suspended) };
+      }
+      return r;
+    }
     const r = await guardUpload(file, src, uploader);
     if (!r.ok) {
       setCount(r.count);
-      setNotice({ count: r.count, reason: r.reason });
+      setNotice({ count: r.count, reason: r.reason, detector: r.flagged && r.flagged.detector });
     }
     return r;
   }
@@ -895,28 +916,50 @@ export function usePhotoGuard(uploader) {
 }
 
 export function PhotoGuardNotice({ guard }) {
-  if (guard.locked) {
+  const n = guard.notice;
+  if (n && n.officer) {
     return (
-      <div role="alert" className="mb-3 rounded-xl bg-rose-50 p-4 text-sm text-rose-900 ring-1 ring-rose-300">
-        <p className="font-semibold">Photo uploads are blocked for your account</p>
-        <p className="mt-1">You've received {MAX_WARNINGS} warnings for uploading AI-generated photos. To restore uploads, contact the helpline on {SUPPORT.phone} or your supervisor.</p>
+      <div role="alert" className={`mb-3 rounded-xl p-4 text-sm ring-1 ${n.suspended ? "bg-rose-50 text-rose-900 ring-rose-300" : "bg-amber-50 text-amber-950 ring-amber-300"}`}>
+        <div className="flex items-start justify-between gap-3">
+          <p className="font-semibold">⚠ {n.detector || "AI detector"}: this photo looks AI-generated, so it wasn't added</p>
+          <button type="button" onClick={guard.dismiss} aria-label="Dismiss warning" className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-lg hover:bg-black/5">×</button>
+        </div>
+        <p className="mt-1">
+          A tampered-image warning has been recorded{n.count != null ? ` (${n.count} this week)` : ""} and your supervisor has been notified.
+          {n.suspended ? " You have exceeded the weekly limit and are now suspended." : " More than 3 warnings in a week means suspension."}
+        </p>
+        <p className="mt-1 text-xs opacity-70">Reason: {n.reason}</p>
       </div>
     );
   }
-  if (guard.notice) {
+  if (guard.locked && !n) {
     return (
-      <div role="alert" className="mb-3 rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-300">
+      <div role="alert" className="mb-3 rounded-xl bg-rose-50 p-4 text-sm text-rose-900 ring-1 ring-rose-300">
+        <p className="font-semibold">Your account is suspended</p>
+        <p className="mt-1">You've received {MAX_WARNINGS} warnings for uploading AI-generated photos, so you can't submit complaints or upload photos. To restore your account, contact the helpline on {SUPPORT.phone}.</p>
+      </div>
+    );
+  }
+  if (n) {
+    const last = n.count >= MAX_WARNINGS;
+    return (
+      <div role="alert" className={`mb-3 rounded-xl p-4 text-sm ring-1 ${last ? "bg-rose-50 text-rose-900 ring-rose-300" : "bg-amber-50 text-amber-950 ring-amber-300"}`}>
         <div className="flex items-start justify-between gap-3">
-          <p className="font-semibold">⚠ Warning {guard.notice.count} of {MAX_WARNINGS}: this photo looks AI-generated, so it wasn't added</p>
-          <button type="button" onClick={guard.dismiss} aria-label="Dismiss warning" className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-lg hover:bg-amber-100">×</button>
+          <p className="font-semibold">⚠ {n.detector || "AI detector"}: this photo is AI-generated. You can't submit a complaint with it.</p>
+          <button type="button" onClick={guard.dismiss} aria-label="Dismiss warning" className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-lg hover:bg-black/5">×</button>
         </div>
-        <p className="mt-1">Please take a real photo at the site. After {MAX_WARNINGS} warnings, photo uploads are blocked for your account.</p>
-        <p className="mt-1 text-xs text-amber-900/70">Reason: {guard.notice.reason}</p>
+        <p className="mt-1 font-medium">
+          {last
+            ? `Warning ${n.count} of ${MAX_WARNINGS}: your account is now suspended. You can't submit complaints until the helpline restores it.`
+            : `Warning ${n.count} of ${MAX_WARNINGS}: at ${MAX_WARNINGS} warnings your account will be suspended.`}
+        </p>
+        <p className="mt-1">Please take a real photo of the issue at the site.</p>
+        <p className="mt-1 text-xs opacity-70">Reason: {n.reason}</p>
       </div>
     );
   }
   if (guard.count > 0) {
-    return <p className="mb-2 text-xs font-medium text-amber-800">You have {guard.count} of {MAX_WARNINGS} warnings for AI-generated photos.</p>;
+    return <p className="mb-2 text-xs font-medium text-amber-800">You have {guard.count} of {MAX_WARNINGS} warnings for AI-generated photos. At {MAX_WARNINGS}, your account is suspended.</p>;
   }
   return null;
 }
