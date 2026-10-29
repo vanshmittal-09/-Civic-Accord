@@ -8,9 +8,8 @@ import {
 } from "./civicLedger";
 import {
   STATUS_META, EVENT_LABEL, CHECKS, CHECK_LABEL, dur, ago, stamp, queueMeta, stripAndCompress,
-  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, openPhotoViewer, RatingCard, averageRating, StarRating, CaseTimer,
+  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, openPhotoViewer, usePhotoGuard, PhotoGuardNotice, RatingCard, averageRating, StarRating, CaseTimer,
 } from "./shared";
-import { readPhotoSignals } from "./imageCheck";
 
 const ME = PEOPLE.damodar;
 const MIN_NOTE = 20;
@@ -21,6 +20,7 @@ const MAX_PHOTOS = 4;
 function ProposalForm({ c, now, onSubmit, isRework }) {
   const [photos, setPhotos] = useState([]);
   const [photoErr, setPhotoErr] = useState("");
+  const guard = usePhotoGuard({ id: ME.id, name: ME.name, role: ME.role });
   const [note, setNote] = useState("");
   const [checks, setChecks] = useState(() => Object.fromEntries(CHECKS.map((c) => [c.key, false])));
   const [busy, setBusy] = useState(false);
@@ -44,8 +44,10 @@ function ProposalForm({ c, now, onSubmit, isRework }) {
         continue;
       }
       try {
-        const signals = await readPhotoSignals(f); // read before the metadata is stripped
         const src = await stripAndCompress(f);
+        const check = await guard.check(f, src); // AI-photo screening (silent for real photos)
+        if (!check.ok) { if (check.locked) break; continue; }
+        const signals = check.signals;
         added.push({
           signals,
           id: `${f.name}-${f.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
@@ -93,7 +95,8 @@ function ProposalForm({ c, now, onSubmit, isRework }) {
             <p className="text-sm font-medium text-slate-800">1. Completion photos <span className="font-normal text-slate-500">(up to {MAX_PHOTOS})</span></p>
             <p className={`whitespace-nowrap text-xs ${photos.length ? "text-emerald-700" : "text-slate-500"}`}>{photos.length}/{MAX_PHOTOS} added</p>
           </div>
-          {photos.length === 0 ? (
+          <PhotoGuardNotice guard={guard} />
+          {guard.locked && photos.length === 0 ? null : photos.length === 0 ? (
             <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-teal-300 bg-teal-50/60 px-4 py-8 text-center text-teal-800 transition hover:bg-teal-50 focus-within:ring-2 focus-within:ring-teal-500">
               {Icon.camera}
               <span className="font-semibold">Take photos at the site</span>
@@ -119,7 +122,7 @@ function ProposalForm({ c, now, onSubmit, isRework }) {
                     <figcaption className="mt-1 text-[11px] text-slate-500">Captured {stamp(ph.capturedAt)}</figcaption>
                   </figure>
                 ))}
-                {photos.length < MAX_PHOTOS && (
+                {photos.length < MAX_PHOTOS && !guard.locked && (
                   <label className="flex aspect-[4/3] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-teal-300 bg-teal-50/60 text-teal-800 transition hover:bg-teal-50 focus-within:ring-2 focus-within:ring-teal-500">
                     {Icon.camera}
                     <span className="text-sm font-semibold">Add photo</span>

@@ -198,10 +198,10 @@ function CitizenScreen({ session, onSignOut }) {
                     <button type="button" onClick={() => setMode("view")} className="mb-3 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[#3b2a7a] hover:bg-violet-50">
                       ← Back to my complaints
                     </button>
-                    <ReportForm onCancel={() => setMode("view")} onSubmit={submitReport} />
+                    <ReportForm onCancel={() => setMode("view")} onSubmit={submitReport} uploader={me} />
                   </>
                 ) : selected ? (
-                  <CaseDetail key={selected.id} c={selected} now={now} act={act} />
+                  <CaseDetail key={selected.id} c={selected} now={now} act={act} me={me} />
                 ) : (
                   <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Report an issue to get started.</p>
                 )}
@@ -225,7 +225,7 @@ function CitizenScreen({ session, onSignOut }) {
 }
 
 /* ---------------- report a problem ---------------- */
-function ReportForm({ onSubmit, onCancel }) {
+function ReportForm({ onSubmit, onCancel, uploader }) {
   const [category, setCategory] = useState(ISSUE_GROUPS[0].items[0]);
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
@@ -270,7 +270,7 @@ function ReportForm({ onSubmit, onCancel }) {
         </div>
         <div>
           <p className="mb-1.5 text-sm font-medium">Photos <span className="font-normal text-slate-500">(at least 1, up to 4)</span></p>
-          <PhotoPicker photos={photos} onChange={setPhotos} prompt="Take a photo of the issue" tone="violet" />
+          <PhotoPicker photos={photos} onChange={setPhotos} prompt="Take a photo of the issue" tone="violet" uploader={uploader} />
         </div>
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <button type="button" onClick={submit} disabled={!valid || busy} className="flex-1 rounded-xl bg-[#3b2a7a] px-4 py-3 text-sm font-semibold text-white hover:bg-[#2e2061] disabled:cursor-not-allowed disabled:bg-slate-300">
@@ -284,7 +284,7 @@ function ReportForm({ onSubmit, onCancel }) {
 }
 
 /* ---------------- case detail ---------------- */
-function CaseDetail({ c, now, act }) {
+function CaseDetail({ c, now, act, me }) {
   const [disputing, setDisputing] = useState(false);
   const [confirming, setConfirming] = useState(false); // shows the rate-and-confirm form
 
@@ -335,6 +335,7 @@ function CaseDetail({ c, now, act }) {
           </div>
         ) : (
           <DisputeForm
+            uploader={me}
             onCancel={() => setDisputing(false)}
             onSubmit={(d) => act(c.id, "DISPUTE", d, `Dispute sent. Supervisor Patel will review #${c.id}.`)}
           />
@@ -414,7 +415,7 @@ function CaseDetail({ c, now, act }) {
   );
 }
 
-function DisputeForm({ onSubmit, onCancel }) {
+function DisputeForm({ onSubmit, onCancel, uploader }) {
   const [note, setNote] = useState("");
   const [photos, setPhotos] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -442,7 +443,7 @@ function DisputeForm({ onSubmit, onCancel }) {
         </div>
         <div>
           <p className="mb-1.5 text-sm font-medium">Counter-proof photos <span className="font-normal text-slate-500">(at least 1)</span></p>
-          <PhotoPicker photos={photos} onChange={setPhotos} prompt="Photograph what's still wrong" tone="rose" />
+          <PhotoPicker photos={photos} onChange={setPhotos} prompt="Photograph what's still wrong" tone="rose" uploader={uploader} />
         </div>
         <div>
           <label htmlFor="dnote" className="mb-1.5 block text-sm font-medium">What's not fixed?</label>

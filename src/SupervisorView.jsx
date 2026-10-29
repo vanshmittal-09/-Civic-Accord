@@ -8,6 +8,7 @@ import {
   TopBar, AccessDenied, SiteFooter, LedgerBar, openPhotoViewer, StarRating, RatingCard, averageRating, CaseTimer,
 } from "./shared";
 import { assessPhoto, detectAiOnline, ONLINE_AI_CHECK } from "./imageCheck";
+import { listFlagged, clearWarnings, MAX_WARNINGS } from "./photoGuard";
 
 const MIN_RULING = 30;
 
@@ -155,6 +156,7 @@ function SupervisorScreen({ session, onSignOut }) {
                 })}
 
                 <OfficerTable rows={officerStats} />
+                <FlaggedAccounts />
               </aside>
 
               <div>
@@ -453,6 +455,66 @@ function PhotoCheck({ c }) {
                     </div>
                   )}
                 </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+/* ---------------- accounts warned for AI-generated photos ---------------- */
+function FlaggedAccounts() {
+  const [rows, setRows] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+
+  async function load() {
+    try { setRows(await listFlagged()); } catch { setRows([]); }
+  }
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 15000); // pick up new warnings from other screens and devices
+    return () => clearInterval(t);
+  }, []);
+
+  async function clear(userId) {
+    if (confirm !== userId) { setConfirm(userId); return; }
+    setConfirm(null);
+    await clearWarnings(userId);
+    load();
+  }
+
+  return (
+    <Card className="!p-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold">Flagged accounts</h3>
+        <button type="button" onClick={load} className="text-xs font-semibold text-sky-700 hover:underline">Refresh</button>
+      </div>
+      <p className="text-xs text-slate-500">Accounts warned for uploading AI-generated photos. {MAX_WARNINGS} warnings block uploads.</p>
+      {rows === null && <p className="mt-3 text-xs text-slate-500">Loading…</p>}
+      {rows && rows.length === 0 && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 ring-1 ring-slate-200">No warnings so far.</p>}
+      {rows && rows.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {rows.map((r) => {
+            const blocked = r.count >= MAX_WARNINGS;
+            return (
+              <li key={r.userId} className={`rounded-lg px-3 py-2 ring-1 ${blocked ? "bg-rose-50 ring-rose-200" : "bg-amber-50 ring-amber-200"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{r.userName}</p>
+                    <p className="text-[11px] text-slate-500">{r.role === "OFFICER" ? "Officer" : "Resident"} · last {stamp(r.last)}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${blocked ? "bg-rose-600 text-white" : "bg-amber-200 text-amber-950"}`}>
+                    {blocked ? "Blocked" : `${r.count}/${MAX_WARNINGS} warnings`}
+                  </span>
+                </div>
+                <button
+                  type="button" onClick={() => clear(r.userId)}
+                  className={`mt-1.5 text-xs font-semibold ${confirm === r.userId ? "text-rose-700" : "text-sky-700"} hover:underline`}
+                >
+                  {confirm === r.userId ? "Click again to clear warnings" : blocked ? "Clear warnings and unblock" : "Clear warnings"}
+                </button>
               </li>
             );
           })}

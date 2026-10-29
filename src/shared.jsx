@@ -4,6 +4,7 @@ import { STATES, AUTO_CLOSE_MS, HOUR, CLOSED_STATES as CLOSED_STATES_LOCAL } fro
 import logoUrl from "./assets/logo.png";
 import { getResident, STAFF_PROFILES } from "./accounts";
 import { readPhotoSignals } from "./imageCheck";
+import { guardUpload, getWarnings, MAX_WARNINGS } from "./photoGuard";
 
 export const MAX_PHOTOS = 4;
 export const MAX_PHOTO_AGE_MS = 24 * HOUR;
@@ -213,8 +214,9 @@ export function ComplaintPhotos({ c }) {
 }
 
 /** Multi-photo picker: camera on phones, 24h freshness check, metadata stripped. */
-export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take photos", hint = "Photos older than 24h are rejected.", tone = "teal" }) {
+export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take photos", hint = "Photos older than 24h are rejected.", tone = "teal", uploader }) {
   const [err, setErr] = useState("");
+  const guard = usePhotoGuard(uploader);
   const tones = {
     teal: "border-teal-300 bg-teal-50/60 text-teal-800 hover:bg-teal-50 focus-within:ring-teal-500",
     violet: "border-violet-300 bg-violet-50/60 text-violet-800 hover:bg-violet-50 focus-within:ring-violet-500",
@@ -232,9 +234,10 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
       if (!f.type.startsWith("image/")) { errors.push(`${f.name} isn't an image.`); continue; }
       if (Date.now() - f.lastModified > MAX_PHOTO_AGE_MS) { errors.push(`${f.name} is more than 24 hours old.`); continue; }
       try {
-        const signals = await readPhotoSignals(f); // read before the metadata is stripped
         const src = await stripAndCompress(f);
-        added.push({ id: `${f.name}-${f.lastModified}-${Math.random().toString(36).slice(2, 7)}`, src, capturedAt: f.lastModified, signals });
+        const check = await guard.check(f, src); // AI-photo screening (silent for real photos)
+        if (!check.ok) { if (check.locked) break; continue; }
+        added.push({ id: `${f.name}-${f.lastModified}-${Math.random().toString(36).slice(2, 7)}`, src, capturedAt: f.lastModified, signals: check.signals });
       } catch {
         errors.push(`Couldn't read ${f.name}.`);
       }
@@ -243,8 +246,10 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
     setErr(errors.join(" "));
   }
   const input = <input type="file" accept="image/*" capture="environment" multiple className="sr-only" onChange={onFiles} />;
+  if (guard.locked && photos.length === 0) return <PhotoGuardNotice guard={guard} />;
   return (
     <div>
+      <PhotoGuardNotice guard={guard} />
       {photos.length === 0 ? (
         <label className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-7 text-center transition focus-within:ring-2 ${tones[tone]}`}>
           {Icon.camera}
@@ -270,7 +275,7 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
                 </button>
               </figure>
             ))}
-            {photos.length < max && (
+            {photos.length < max && !guard.locked && (
               <label className={`flex aspect-[4/3] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed transition focus-within:ring-2 ${tones[tone]}`}>
                 {Icon.camera}
                 <span className="text-sm font-semibold">Add photo</span>
@@ -652,7 +657,7 @@ function PrivacyDialog({ onClose }) {
         <p>Only to register, route and resolve civic complaints, and to let you verify that work was done. We don't sell your data or use it for advertising.</p>
 
         <H>Photos and location</H>
-        <p>Before any photo is saved, the app removes its hidden metadata (EXIF), including GPS location. To help supervisors check that photos are genuine and not AI-generated, it keeps only the camera make and model, the time the photo was taken, and the name of any editing software. Please avoid photographing people's faces or vehicle number plates.</p>
+        <p>Before any photo is saved, the app removes its hidden metadata (EXIF), including GPS location. To help supervisors check that photos are genuine and not AI-generated, it keeps only the camera make and model, the time the photo was taken, and the name of any editing software. Every photo is checked when uploaded: if it looks AI-generated, it isn't added and a warning is recorded on your account. After 3 warnings, photo uploads are blocked until a supervisor reviews the account. Please avoid photographing people's faces or vehicle number plates.</p>
 
         <H>Who can see what</H>
         <p>Residents see only their own complaints. The assigned field officer sees complaints in their zone. Supervisors see disputed cases to make a ruling. Your mobile number and address are shown only on your own profile.</p>
@@ -861,4 +866,56 @@ export function CaseTimer({ c }) {
       {deadline}
     </span>
   );
+}
+
+/* ---------------- AI-photo screening on upload (shared by every form) ---------------- */
+/** Screens uploads for one account. Real photos pass silently; AI photos get a warning (max 3). */
+export function usePhotoGuard(uploader) {
+  const [count, setCount] = useState(0);
+  const [notice, setNotice] = useState(null);
+  const uid = uploader && uploader.id;
+  useEffect(() => {
+    let alive = true;
+    if (uid) getWarnings(uid).then((w) => { if (alive) setCount(w.length); }).catch(() => {});
+    return () => { alive = false; };
+  }, [uid]);
+  const locked = count >= MAX_WARNINGS;
+  async function check(file, src) {
+    if (!uploader) return { ok: true, signals: await readPhotoSignals(file) };
+    if (count >= MAX_WARNINGS) return { ok: false, locked: true };
+    const r = await guardUpload(file, src, uploader);
+    if (!r.ok) {
+      setCount(r.count);
+      setNotice({ count: r.count, reason: r.reason });
+    }
+    return r;
+  }
+  return { count, locked, notice, check, dismiss: () => setNotice(null) };
+}
+
+export function PhotoGuardNotice({ guard }) {
+  if (guard.locked) {
+    return (
+      <div role="alert" className="mb-3 rounded-xl bg-rose-50 p-4 text-sm text-rose-900 ring-1 ring-rose-300">
+        <p className="font-semibold">Photo uploads are blocked for your account</p>
+        <p className="mt-1">You've received {MAX_WARNINGS} warnings for uploading AI-generated photos. To restore uploads, contact the helpline on {SUPPORT.phone} or your supervisor.</p>
+      </div>
+    );
+  }
+  if (guard.notice) {
+    return (
+      <div role="alert" className="mb-3 rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-300">
+        <div className="flex items-start justify-between gap-3">
+          <p className="font-semibold">⚠ Warning {guard.notice.count} of {MAX_WARNINGS}: this photo looks AI-generated, so it wasn't added</p>
+          <button type="button" onClick={guard.dismiss} aria-label="Dismiss warning" className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-lg hover:bg-amber-100">×</button>
+        </div>
+        <p className="mt-1">Please take a real photo at the site. After {MAX_WARNINGS} warnings, photo uploads are blocked for your account.</p>
+        <p className="mt-1 text-xs text-amber-900/70">Reason: {guard.notice.reason}</p>
+      </div>
+    );
+  }
+  if (guard.count > 0) {
+    return <p className="mb-2 text-xs font-medium text-amber-800">You have {guard.count} of {MAX_WARNINGS} warnings for AI-generated photos.</p>;
+  }
+  return null;
 }

@@ -182,3 +182,37 @@ returns void language sql security definer set search_path = public as $$
   delete from public.events where true;
 $$;
 grant execute on function public.reset_demo() to anon, authenticated;
+
+/* ------------------------------------------------------------------ */
+/* 3. AI-photo warnings (3 warnings, then uploads are blocked)          */
+/* ------------------------------------------------------------------ */
+create table if not exists public.photo_warnings (
+  id          bigint generated always as identity primary key,
+  user_id     text not null,
+  user_name   text not null,
+  role        text not null,
+  reason      text not null default '',
+  score       real,
+  created_at  timestamptz not null default now()
+);
+create index if not exists photo_warnings_user_idx on public.photo_warnings (user_id);
+alter table public.photo_warnings enable row level security;
+
+drop policy if exists "Anyone can read photo warnings" on public.photo_warnings;
+create policy "Anyone can read photo warnings" on public.photo_warnings
+  for select to anon, authenticated using (true);
+
+drop policy if exists "Anyone can record a photo warning" on public.photo_warnings;
+create policy "Anyone can record a photo warning" on public.photo_warnings
+  for insert to anon, authenticated with check (true);
+-- No update or delete policies: only the supervisor function below can clear warnings.
+
+grant select, insert on public.photo_warnings to anon, authenticated;
+
+-- Supervisor "Clear warnings" button.
+-- ⚠️ Prototype: anyone using the app could call this. Restrict it to supervisors before real use.
+create or replace function public.clear_photo_warnings(p_user text)
+returns void language sql security definer set search_path = public as $$
+  delete from public.photo_warnings where user_id = p_user;
+$$;
+grant execute on function public.clear_photo_warnings(text) to anon, authenticated;

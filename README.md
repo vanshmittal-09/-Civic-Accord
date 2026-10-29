@@ -76,6 +76,11 @@ When a dispute reaches the supervisor, **AI photo check** reviews every photo in
 
 > No detector is perfect. The check is advice for the supervisor's ruling, never an automatic decision.
 
+### Upload screening and warnings
+
+Every photo a resident or officer uploads is screened the moment it's added (`src/photoGuard.js`), using the same checks plus the detection model when it's deployed.
+Real photos are added silently. An AI-generated photo is rejected with a warning ("Warning 1 of 3"). After **3 warnings** the account can't upload photos until a supervisor clears it from **Flagged accounts**. With Supabase connected, warnings are stored in the `photo_warnings` table, so they follow the person to any device.
+
 ## How it works
 
 - **Resolution Proposal**: officers cannot close complaints. They submit up to 4 photos (EXIF/GPS stripped in the browser), a work checklist and a note.
