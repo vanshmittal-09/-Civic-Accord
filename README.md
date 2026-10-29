@@ -73,7 +73,7 @@ It runs with onnxruntime-web; the engine and model are served with the app from 
 
 When a dispute reaches the supervisor, **AI photo check** reviews every photo in the case and gives each one an advisory verdict: *Looks like a real camera photo*, *Needs a closer look*, or *Likely AI-generated or edited*, with the reasons.
 
-- **Built-in checks (no setup):** when a photo is taken, before its metadata is stripped, the app keeps only the camera make/model, the capture time and any editing software, and looks for traces AI tools leave in files (Midjourney, DALL·E, Stable Diffusion settings, the IPTC "made by AI" tag, common AI image sizes). Location is never kept.
+- **Photo metadata is kept:** photos are compressed for storage, but the original EXIF block (GPS location, capture time, camera make/model) is copied into the saved photo (`compressPhoto` in `src/shared.jsx`). The app shows each photo's location with a Google Maps link and capture time. The supervisor's **Location check** shows how far the officer's proof and the resident's counter-proof were taken from the complaint photo (green within 100 m, red beyond 500 m). The app also looks for traces AI tools leave in files (Midjourney, DALL·E, Stable Diffusion settings, the IPTC "made by AI" tag, common AI image sizes).
 - **Optional server second opinion (Hive):** a Supabase Edge Function (`supabase/functions/detect-ai-image`) sends each photo to [Hive's AI-generated image detection](https://docs.thehive.ai/docs/ai-image-and-video-detection) and returns a 0–100% "AI-generated" score. The key stays on the server. To turn it on:
   1. Get a Hive API key for the AI-Generated Image Detection model.
   2. Install the [Supabase CLI](https://supabase.com/docs/guides/cli), then in this folder run:
@@ -97,7 +97,7 @@ Every photo is screened the moment it's added (`src/photoGuard.js`) by the Civic
 
 ## How it works
 
-- **Resolution Proposal**: officers cannot close complaints. They submit up to 4 photos (EXIF/GPS stripped in the browser), a work checklist and a note.
+- **Resolution Proposal**: officers cannot close complaints. They submit up to 4 photos (GPS location, capture time and camera details kept), a work checklist and a note.
 - **Citizen Confirmation**: the resident confirms or disputes with counter-photos. No response in 72 hours → *Uncontested Closure*.
 - **Reasoned Review**: the supervisor compares complaint, officer proof and counter-proof side by side, then upholds or orders rework.
 - **Finite state machine**: `SUBMITTED → RESOLUTION_PROPOSED → CONTESTED / CITIZEN_CONFIRMED / UNCONTESTED_CLOSURE → REWORK_ORDERED / REVIEWER_CLOSED`, with role checks on every transition.

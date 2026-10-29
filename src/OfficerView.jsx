@@ -78,7 +78,7 @@ function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
       photos: photos.map(({ src, capturedAt, signals }) => ({ src, capturedAt, signals })),
       photoLabel: "Officer completion photos",
       capturedAt: Math.min(...photos.map((ph) => ph.capturedAt)),
-      metadataStripped: true,
+      metadataKept: true,
     });
     setBusy(false);
   }
@@ -135,7 +135,7 @@ function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
                 )}
               </div>
               <div className="mt-3 flex flex-wrap gap-1.5">
-                <Chip tone="green">{Icon.check}EXIF &amp; GPS metadata removed from all photos</Chip>
+                <Chip tone="green">📍 Location &amp; camera details kept on all photos</Chip>
                 <Chip>
                   {photos.reduce((t, ph) => t + ph.originalKB, 0)} KB → {photos.reduce((t, ph) => t + ph.finalKB, 0)} KB
                 </Chip>

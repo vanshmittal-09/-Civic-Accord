@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { STATES, AUTO_CLOSE_MS, HOUR, CLOSED_STATES as CLOSED_STATES_LOCAL } from "./civicLedger";
 import logoUrl from "./assets/logo.png";
 import { getResident, STAFF_PROFILES } from "./accounts";
-import { readPhotoSignals } from "./imageCheck";
+import { readPhotoSignals, extractExifSegment, mapsLink, formatGps } from "./imageCheck";
 import { guardUpload, getWarnings, MAX_WARNINGS } from "./photoGuard";
 import { loadDetector } from "./aiDetector";
 
@@ -71,9 +71,12 @@ export function queueMeta(c, now) {
   }
 }
 
-/** Redrawing onto a canvas drops ALL metadata (EXIF, GPS, device). Also shrinks the file. */
-export function stripAndCompress(file, max = 800) {
-  return new Promise((resolve, reject) => {
+/**
+ * Shrinks a photo for storage and KEEPS its metadata: the original EXIF block (camera, capture
+ * time, GPS location) is copied into the compressed JPEG.
+ */
+export async function compressPhoto(file, max = 800) {
+  const small = await new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -88,7 +91,24 @@ export function stripAndCompress(file, max = 800) {
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("decode")); };
     img.src = url;
   });
+  let exif = null;
+  try { exif = extractExifSegment(await file.arrayBuffer()); } catch { exif = null; }
+  if (!exif) return small;
+  // splice: SOI + original EXIF (APP1) + compressed JPEG without its SOI/JFIF header
+  const bin = atob(small.slice(small.indexOf(",") + 1));
+  const jpg = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) jpg[i] = bin.charCodeAt(i);
+  let rest = 2;
+  if (jpg[2] === 0xff && jpg[3] === 0xe0) rest = 4 + ((jpg[4] << 8) | jpg[5]); // drop APP0 (JFIF)
+  const out = new Uint8Array(2 + exif.length + jpg.length - rest);
+  out.set([0xff, 0xd8], 0);
+  out.set(exif, 2);
+  out.set(jpg.subarray(rest), 2 + exif.length);
+  let s = "";
+  for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode.apply(null, out.subarray(i, i + 0x8000));
+  return `data:image/jpeg;base64,${btoa(s)}`;
 }
+export const stripAndCompress = compressPhoto; // older name, kept for compatibility
 
 /* ---------------- small UI pieces ---------------- */
 export function StatusBadge({ state, label }) {
@@ -171,9 +191,10 @@ export function ProofCard({ title, proof, at, tone = "officer" }) {
         </div>
       )}
       {proof.note && <p className="mt-3 text-sm leading-relaxed text-slate-700">{proof.note}</p>}
-      {proof.metadataStripped && (
+      {proof.metadataStripped && !proof.metadataKept && (
         <p className="mt-2 text-xs text-slate-500">Photo metadata (EXIF/GPS) removed before saving.</p>
       )}
+      {proof.metadataKept && <PhotoLocations photos={proof.photos} />}
     </Card>
   );
 }
@@ -210,6 +231,7 @@ export function ComplaintPhotos({ c }) {
         {c.photos.map((ph, i) => (
           <EvidencePhoto key={i} photo={ph} alt={`Complaint photo ${i + 1}`} gallery={c.photos} index={i} title="Complaint photos" compact={c.photos.length > 1} />
         ))}
+        {c.photos.some((p) => p.signals) && <div className="col-span-full"><PhotoLocations photos={c.photos} /></div>}
       </div>
     );
   }
@@ -291,7 +313,7 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
             )}
           </div>
           <p className="mt-2 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
-            {Icon.check}Location &amp; EXIF metadata removed · {photos.length}/{max}
+            📍 Location &amp; camera details kept · {photos.length}/{max}
           </p>
         </>
       )}
@@ -502,6 +524,9 @@ export function EvidencePhoto({ photo, alt, hideSampleTag = false, gallery, inde
           <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
         </span>
       </button>
+      {photo.signals && photo.signals.gps && (
+        <span className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/55 px-1.5 py-px text-[10px] text-white" title="Has GPS location">📍</span>
+      )}
       {photo.sample && !hideSampleTag && (
         <figcaption className={`pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-black/55 font-medium uppercase tracking-wide text-white ${compact ? "px-1 py-px text-[8px]" : "px-1.5 py-0.5 text-[10px]"}`}>
           Sample
@@ -577,6 +602,17 @@ export function PhotoViewer() {
       <div className="relative flex min-h-0 flex-1 items-center justify-center px-2 pb-[max(1rem,env(safe-area-inset-bottom))]" onMouseDown={(e) => { if (e.target === e.currentTarget) setView(null); }}>
         <img src={photo.src} alt={`${view.title} ${view.index + 1}`} className="h-full w-full object-contain" />
         {photo.sample && <span className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-black/60 px-2 py-0.5 text-xs uppercase tracking-wide text-white">Sample illustration</span>}
+        {photo.signals && (photo.signals.gps || photo.signals.camera || photo.signals.takenAt) && (
+          <div className="absolute bottom-4 left-1/2 flex max-w-[calc(100%-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-xl bg-black/70 px-3 py-2 text-xs text-white">
+            {photo.signals.gps && (
+              <a href={mapsLink(photo.signals.gps)} target="_blank" rel="noopener noreferrer" className="font-semibold underline decoration-white/40 underline-offset-2 hover:decoration-white">
+                📍 {formatGps(photo.signals.gps)} · Open in Maps
+              </a>
+            )}
+            {photo.signals.takenAt && <span>🕒 {exifStamp(photo.signals.takenAt)}</span>}
+            {photo.signals.camera && <span>📷 {photo.signals.camera}</span>}
+          </div>
+        )}
         {count > 1 && (
           <>
             <button type="button" onClick={() => go(-1)} aria-label="Previous photo" className={`${navBtn} left-3`}>‹</button>
@@ -665,7 +701,7 @@ function PrivacyDialog({ onClose }) {
         <p>Only to register, route and resolve civic complaints, and to let you verify that work was done. We don't sell your data or use it for advertising.</p>
 
         <H>Photos and location</H>
-        <p>Before any photo is saved, the app removes its hidden metadata (EXIF), including GPS location. To help supervisors check that photos are genuine and not AI-generated, it keeps only the camera make and model, the time the photo was taken, and the name of any editing software. Every photo is checked when uploaded: if it looks AI-generated, it isn't added and a warning is recorded on your account. After 3 warnings, photo uploads are blocked until a supervisor reviews the account. Please avoid photographing people's faces or vehicle number plates.</p>
+        <p>Photos keep their original details (EXIF), including the GPS location, capture time and camera model, so officers and supervisors can confirm the photo was taken at the reported place and time. The location of each photo is visible to the officer and supervisor handling your complaint. If you don't want a location saved, turn off location tagging in your camera app before taking the photo. Every photo is checked when uploaded: if it looks AI-generated, it isn't added and a warning is recorded on your account. After 3 warnings, the account is suspended until it is reviewed. Please avoid photographing people's faces or vehicle number plates.</p>
 
         <H>Who can see what</H>
         <p>Residents see only their own complaints. The assigned field officer sees complaints in their zone. Supervisors see disputed cases to make a ruling. Your mobile number and address are shown only on your own profile.</p>
@@ -980,4 +1016,34 @@ export function PhotoGuardNotice({ guard }) {
     return <p className="mb-2 text-xs font-medium text-amber-800">You have {guard.count} of {MAX_WARNINGS} warnings for AI-generated photos. At {MAX_WARNINGS}, your account is suspended.</p>;
   }
   return null;
+}
+
+/* ---------------- photo location (kept from the camera's EXIF) ---------------- */
+// "2026:10:29 09:12:44" -> "29 Oct 2026, 9:12 am"
+export function exifStamp(t) {
+  const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/.exec(t || "");
+  if (!m) return t;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** One line per photo: where and when it was taken, with a map link. */
+export function PhotoLocations({ photos }) {
+  const list = (photos || []).map((p, i) => ({ i, s: p && p.signals })).filter((x) => x.s);
+  if (!list.length) return null;
+  return (
+    <ul className="mt-2 space-y-1">
+      {list.map(({ i, s }) => (
+        <li key={i} className="text-xs text-slate-600">
+          <span className="font-medium text-slate-700">Photo {i + 1}:</span>{" "}
+          {s.gps ? (
+            <a href={mapsLink(s.gps)} target="_blank" rel="noopener noreferrer" className="font-medium text-sky-700 hover:underline">📍 {formatGps(s.gps)}</a>
+          ) : (
+            <span className="text-slate-500">no GPS location recorded</span>
+          )}
+          {s.takenAt && <span> · 🕒 {exifStamp(s.takenAt)}</span>}
+          {s.camera && <span> · 📷 {s.camera}</span>}
+        </li>
+      ))}
+    </ul>
+  );
 }

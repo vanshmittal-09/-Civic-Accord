@@ -447,7 +447,7 @@ function DisputeForm({ onSubmit, onCancel, uploader, suspended }) {
       note: note.trim(),
       photos: photos.map(({ src, capturedAt, signals }) => ({ src, capturedAt, signals })),
       photoLabel: "Resident counter-proof",
-      metadataStripped: true,
+      metadataKept: true,
     });
     setBusy(false);
   }

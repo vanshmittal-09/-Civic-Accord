@@ -7,7 +7,7 @@ import {
   dur, ago, stamp, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
   TopBar, AccessDenied, SiteFooter, LedgerBar, openPhotoViewer, StarRating, RatingCard, averageRating, CaseTimer,
 } from "./shared";
-import { assessPhoto, detectAiOnline, ONLINE_AI_CHECK } from "./imageCheck";
+import { assessPhoto, detectAiOnline, ONLINE_AI_CHECK, distanceMeters, mapsLink, formatGps } from "./imageCheck";
 import { listFlagged, clearWarnings, MAX_WARNINGS } from "./photoGuard";
 
 const MIN_RULING = 30;
@@ -405,6 +405,7 @@ function CaseDetail({ c, now, onRule, officerWarn }) {
               <ProofCard title="3 · Resident's counter-proof" proof={c.dispute} at={c.disputedAt} tone="citizen" />
             </div>
           </section>
+          <LocationCheck c={c} />
           <PhotoCheck key={c.id} c={c} />
           <RulingForm c={c} onRule={onRule} officerWarn={officerWarn} />
         </>
@@ -572,6 +573,48 @@ function ReadOnlyPanel({ c, now }) {
       </div>
       {c.rating && <RatingCard rating={c.rating} who="Resident's rating" />}
     </>
+  );
+}
+
+/* ---------------- location check (from the photos' GPS) ---------------- */
+function firstGps(photos) {
+  const p = (photos || []).find((x) => x && x.signals && x.signals.gps);
+  return p ? p.signals.gps : null;
+}
+function LocationCheck({ c }) {
+  const home = firstGps(c.photos);
+  const rows = [
+    ...((c.proposal && c.proposal.photos) || []).map((p, i) => ({ who: `Officer proof ${i + 1}`, gps: p.signals && p.signals.gps })),
+    ...((c.dispute && c.dispute.photos) || []).map((p, i) => ({ who: `Resident counter-proof ${i + 1}`, gps: p.signals && p.signals.gps })),
+  ];
+  if (!home && !rows.some((r) => r.gps)) return null;
+  return (
+    <Card>
+      <h4 className="text-sm font-semibold">📍 Location check</h4>
+      <p className="text-xs text-slate-500">From the GPS saved in each photo. Shows how far each photo was taken from the original complaint photo.</p>
+      {home ? (
+        <p className="mt-2 text-xs text-slate-700">Complaint photo: <a className="font-medium text-sky-700 hover:underline" href={mapsLink(home)} target="_blank" rel="noopener noreferrer">{formatGps(home)}</a></p>
+      ) : (
+        <p className="mt-2 text-xs text-slate-500">The complaint photo has no GPS location, so distances can't be compared.</p>
+      )}
+      <ul className="mt-2 space-y-1.5">
+        {rows.map((r, i) => {
+          const d = home && r.gps ? distanceMeters(home, r.gps) : null;
+          const tone = d == null ? "bg-slate-100 text-slate-600" : d <= 100 ? "bg-emerald-100 text-emerald-800" : d <= 500 ? "bg-amber-100 text-amber-900" : "bg-rose-100 text-rose-800";
+          return (
+            <li key={i} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-medium text-slate-700">{r.who}:</span>
+              {r.gps ? <a className="text-sky-700 hover:underline" href={mapsLink(r.gps)} target="_blank" rel="noopener noreferrer">{formatGps(r.gps)}</a> : <span className="text-slate-500">no GPS location</span>}
+              {d != null && (
+                <span className={`rounded-full px-2 py-0.5 font-semibold ${tone}`}>
+                  {d < 1000 ? `${d} m` : `${(d / 1000).toFixed(1)} km`} from complaint{d > 500 ? " · different place?" : d <= 100 ? " · same spot" : ""}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
   );
 }
 

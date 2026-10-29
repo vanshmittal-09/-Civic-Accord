@@ -1,8 +1,8 @@
 // imageCheck.js — helps the supervisor judge whether a photo is a real camera photo or AI-generated.
 //
-// 1. readPhotoSignals(file): runs when a photo is taken, BEFORE metadata is stripped. It keeps only
-//    harmless facts (camera make/model, capture time, editing software, size, AI-tool markers).
-//    GPS / location is never read or kept.
+// 1. readPhotoSignals(file): runs when a photo is taken. It reads camera make/model, capture time,
+//    editing software, size, AI-tool markers and the GPS location (if the camera recorded one).
+//    The photo's metadata (EXIF, including GPS) is kept in the saved photo as well.
 // 2. assessPhoto(photo): turns those facts into an advisory verdict with plain reasons.
 // 3. detectAiOnline(src): optional. With Supabase connected and the "detect-ai-image" function
 //    deployed, sends the photo to an AI-image detection model and returns a 0–1 score.
@@ -42,7 +42,7 @@ function formatOf(bytes) {
   return "other";
 }
 
-// Minimal EXIF reader: camera make/model, software, date taken. Nothing else is read.
+// Minimal EXIF reader: camera make/model, software, date taken, GPS location.
 function readExif(buf) {
   const v = new DataView(buf);
   if (v.byteLength < 4 || v.getUint16(0) !== 0xffd8) return {};
@@ -64,6 +64,7 @@ function parseTiff(v, start) {
   const u16 = (o) => v.getUint16(o, little);
   const u32 = (o) => v.getUint32(o, little);
   let exifIfd = 0;
+  let gpsIfd = 0;
   const readIfd = (ifdOff, wanted) => {
     const base = start + ifdOff;
     if (!ifdOff || base + 2 > v.byteLength) return;
@@ -75,6 +76,7 @@ function parseTiff(v, start) {
       const type = u16(e + 2);
       const count = u32(e + 4);
       if (tag === 0x8769) { exifIfd = u32(e + 8); continue; }
+      if (tag === 0x8825) { gpsIfd = u32(e + 8); continue; }
       if (type !== 2 || !wanted[tag]) continue;
       const valOff = count > 4 ? start + u32(e + 8) : e + 8;
       let s = "";
@@ -84,8 +86,85 @@ function parseTiff(v, start) {
   };
   readIfd(u32(start + 4), { 0x010f: "make", 0x0110: "model", 0x0131: "software", 0x0132: "dateTime" });
   if (exifIfd) readIfd(exifIfd, { 0x9003: "dateTimeOriginal" });
+  if (gpsIfd) {
+    // GPS IFD: 1 LatRef "N"/"S", 2 Lat (3 rationals), 3 LonRef "E"/"W", 4 Lon, 5 AltRef, 6 Alt
+    const base = start + gpsIfd;
+    const g = {};
+    if (base + 2 <= v.byteLength) {
+      const n = u16(base);
+      for (let i = 0; i < n; i++) {
+        const e = base + 2 + i * 12;
+        if (e + 12 > v.byteLength) break;
+        const tag = u16(e), type = u16(e + 2), count = u32(e + 4);
+        if ((tag === 1 || tag === 3) && type === 2) g[tag] = String.fromCharCode(v.getUint8(e + 8));
+        if ((tag === 2 || tag === 4) && type === 5 && count === 3) {
+          const p = start + u32(e + 8);
+          if (p + 24 <= v.byteLength) {
+            const r = (k) => { const den = u32(p + k * 8 + 4); return den ? u32(p + k * 8) / den : 0; };
+            g[tag] = r(0) + r(1) / 60 + r(2) / 3600;
+          }
+        }
+        if (tag === 6 && type === 5) {
+          const p = start + u32(e + 8);
+          if (p + 8 <= v.byteLength) { const den = u32(p + 4); g.alt = den ? u32(p) / den : null; }
+        }
+      }
+    }
+    if (typeof g[2] === "number" && typeof g[4] === "number" && (g[2] || g[4])) {
+      out.gps = {
+        lat: +(g[2] * (g[1] === "S" ? -1 : 1)).toFixed(6),
+        lon: +(g[4] * (g[3] === "W" ? -1 : 1)).toFixed(6),
+        ...(g.alt != null ? { alt: Math.round(g.alt) } : {}),
+      };
+    }
+  }
   return out;
 }
+
+/**
+ * Returns the photo's EXIF block (APP1 segment, GPS included) ready to be copied into the
+ * compressed photo, with Orientation reset to 1 because the compressed photo is already upright.
+ */
+export function extractExifSegment(buf) {
+  const v = new DataView(buf);
+  if (v.byteLength < 4 || v.getUint16(0) !== 0xffd8) return null;
+  let off = 2;
+  while (off + 10 < v.byteLength) {
+    const marker = v.getUint16(off);
+    const len = v.getUint16(off + 2);
+    if (marker === 0xffe1 && v.getUint32(off + 4) === 0x45786966) {
+      const seg = new Uint8Array(buf.slice(off, off + 2 + len));
+      const sv = new DataView(seg.buffer);
+      const start = 10;
+      const little = sv.getUint16(start) === 0x4949;
+      const ifd0 = start + sv.getUint32(start + 4, little);
+      if (ifd0 + 2 <= sv.byteLength) {
+        const n = sv.getUint16(ifd0, little);
+        for (let i = 0; i < n; i++) {
+          const e = ifd0 + 2 + i * 12;
+          if (e + 12 > sv.byteLength) break;
+          if (sv.getUint16(e, little) === 0x0112) sv.setUint16(e + 8, 1, little); // Orientation = normal
+        }
+      }
+      return seg;
+    }
+    if ((marker & 0xff00) !== 0xff00 || len < 2) break;
+    off += 2 + len;
+  }
+  return null;
+}
+
+/** Distance in metres between two { lat, lon } points. */
+export function distanceMeters(a, b) {
+  if (!a || !b) return null;
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)));
+}
+
+export const mapsLink = (gps) => `https://www.google.com/maps?q=${gps.lat},${gps.lon}`;
+export const formatGps = (gps) => `${Math.abs(gps.lat).toFixed(5)}°${gps.lat >= 0 ? "N" : "S"}, ${Math.abs(gps.lon).toFixed(5)}°${gps.lon >= 0 ? "E" : "W"}`;
 
 async function imageSize(file) {
   try {
@@ -98,7 +177,7 @@ async function imageSize(file) {
   }
 }
 
-/** Reads authenticity facts from the original file. Never reads location. */
+/** Reads authenticity facts and the GPS location from the original file. */
 export async function readPhotoSignals(file) {
   try {
     const buf = await file.arrayBuffer();
@@ -120,6 +199,7 @@ export async function readPhotoSignals(file) {
       camera: camera || "",
       software: exif.software || "",
       takenAt: exif.dateTimeOriginal || exif.dateTime || "",
+      gps: exif.gps || null,
       aiMarkers,
       c2pa: text.includes("c2pa") || text.includes("jumb"),
       generatorSize: GENERATOR_SIZES.has(`${width}x${height}`),
