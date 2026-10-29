@@ -25,6 +25,7 @@ export const EVENT_LABEL = {
   PROPOSE: "Resolution proposed",
   CONFIRM: "Citizen confirmed closure",
   RATE: "Resident rated the resolution",
+  WARN_OFFICER: "Supervisor warned the officer (rework not done properly)",
   DISPUTE: "Citizen disputed the resolution",
   AUTO_CLOSE: "Auto-closed: no response in 72h",
   ORDER_REWORK: "Supervisor ordered rework",

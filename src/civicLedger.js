@@ -7,7 +7,7 @@ import { CLOUD, getSupabase } from "./supabase";
 
 export const HOUR = 60 * 60 * 1000;
 export const AUTO_CLOSE_MS = 72 * HOUR;
-const STORAGE_KEY = "civicaccord_ledger_v6"; // v6: resident ratings
+const STORAGE_KEY = "civicaccord_ledger_v7"; // v7: officer warnings
 const GENESIS = "0".repeat(64);
 
 // In-memory copy shared by every screen on the page. Used when browser storage is
@@ -39,6 +39,8 @@ export const ACTIONS = {
   UPHOLD:       { from: [STATES.CONTESTED],                to: STATES.REVIEWER_CLOSED, roles: ["SUPERVISOR"] },
   // a resident can rate a closed case once (state doesn't change)
   RATE:         { from: CLOSED_STATES,                     to: null,                   roles: ["CITIZEN"] },
+  // supervisor's formal warning when ordered rework wasn't done properly (state doesn't change)
+  WARN_OFFICER: { from: [STATES.CONTESTED],                to: null,                   roles: ["SUPERVISOR"] },
 };
 
 const VERB = {
@@ -50,6 +52,7 @@ const VERB = {
   ORDER_REWORK: "order rework",
   UPHOLD: "close this case",
   RATE: "rate this resolution",
+  WARN_OFFICER: "warn the officer",
 };
 
 export const PEOPLE = {
@@ -61,6 +64,7 @@ export const PEOPLE = {
   vikram:  { id: "vikram",  name: "Vikram",  role: "CITIZEN" },
   farah:   { id: "farah",   name: "Farah",   role: "CITIZEN" },
   anil:    { id: "anil",    name: "Anil",    role: "CITIZEN" },
+  imran:   { id: "imran",   name: "Imran",   role: "CITIZEN" },
   damodar: { id: "damodar", name: "Officer Damodar",  role: "OFFICER" },
   patel:   { id: "patel",   name: "Supervisor Patel", role: "SUPERVISOR" },
   system:  { id: "system",  name: "System (72h timer)", role: "SYSTEM" },
@@ -84,6 +88,9 @@ export function checkTransition(caseObj, action, role, actorId) {
   }
   if (role === "CITIZEN" && caseObj && caseObj.citizenId !== actorId) {
     return "Blocked: only the citizen who filed this case can respond to it.";
+  }
+  if (action === "WARN_OFFICER" && caseObj && !caseObj.events.some((e) => e.type === "ORDER_REWORK")) {
+    return "Warnings are only for cases where ordered rework wasn't done properly.";
   }
   if (action === "RATE" && caseObj && caseObj.rating) {
     return "You've already rated this resolution.";
@@ -123,8 +130,24 @@ export function deriveCases(events) {
       c.ruling = { ...e.data, by: e.actorName, at: e.at };
     }
     if (e.type === "AUTO_CLOSE") c.autoClose = e.data;
+    if (e.type === "ORDER_REWORK") c.reworkCount = (c.reworkCount || 0) + 1;
+    if (e.type === "WARN_OFFICER") c.warnings = [...(c.warnings || []), { ...e.data, at: e.at, by: e.actorName }];
   }
   return [...byId.values()];
+}
+
+/* Officer warnings: at most 3 in any 7 days */
+export const MAX_OFFICER_WARNINGS = 3;
+export const WARNING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** All warnings for an officer, newest first, plus those in the last 7 days. */
+export function officerWarnings(events, officerId, now) {
+  const all = events
+    .filter((e) => e.type === "WARN_OFFICER" && e.data && e.data.officerId === officerId)
+    .map((e) => ({ ...e.data, caseId: e.caseId, at: e.at, by: e.actorName }))
+    .sort((a, b) => b.at - a.at);
+  const thisWeek = all.filter((w) => now - w.at < WARNING_WINDOW_MS);
+  return { all, thisWeek, escalated: thisWeek.length >= MAX_OFFICER_WARNINGS };
 }
 
 /* ------------------------------------------------------------------ */
@@ -273,6 +296,31 @@ export async function buildSeed(now) {
       ["area", "transported"], "Market road swept", h(40.2))),
     ev("1036", "CONFIRM", P.riya, h(30), { note: "Road is clean now.", rating: 5, comment: "Very quick. The road is spotless and now gets swept every morning." }),
 
+    // a case where the rework was done badly: disputed again after rework
+    submit("1027", P.imran, h(140), {
+      title: "Garbage dumped in lane",
+      category: "Garbage & sanitation",
+      location: "Sector 16, Lane 9 (behind the dairy)",
+      description: "Bags of household waste are dumped at the end of the lane every night and are now blocking the drain.",
+      photoLabel: "Bags dumped at lane end",
+    }),
+    ev("1027", "PROPOSE", P.damodar, h(120), proof(
+      "Lifted the bags from the lane.", ["container"], "Lane end", h(120.2))),
+    ev("1027", "DISPUTE", P.imran, h(110), {
+      note: "Only a few bags were taken. Most of the waste and the blocked drain are still there.",
+      photo: null, photoLabel: "Waste still in lane",
+    }),
+    ev("1027", "ORDER_REWORK", P.patel, h(100), {
+      outcome: "OVERTURNED",
+      ruling: "The resident's photo shows most of the waste still in the lane and the drain blocked. Clear all the waste, open the drain and submit photos of the whole lane.",
+    }),
+    ev("1027", "PROPOSE", P.damodar, h(60), proof(
+      "Cleared the lane again.", ["area"], "Lane after rework", h(60.3))),
+    ev("1027", "DISPUTE", P.imran, h(40), {
+      note: "Same as last time. The drain is still blocked and bags were left behind the dairy wall.",
+      photo: null, photoLabel: "Drain still blocked",
+    }),
+
     submit("1048", P.farah, h(170), {
       title: "Garbage dumped in open area",
       category: "Garbage & sanitation",
@@ -309,9 +357,9 @@ export async function buildSeed(now) {
 
   // attach drawn illustrations (synthetic demo data, not real photos)
   const ART = {
-    SUBMIT:  { 1036: "litteredStreet", 1048: "openDump", 1041: "drainBlocked", 1084: "overflowPark", 1091: "busBags", 1077: "blockOverflow", 1069: "debrisFootpath", 1062: "gateBags", 1055: "brokenLid" },
-    PROPOSE: { 1036: "sweptStreet", 1048: "openClean", 1041: "drainClear", 1091: "busClean", 1077: "blockEmptyBin", 1069: "cornerBin", 1062: "laneClean", 1055: "newBin" },
-    DISPUTE: { 1041: "drainBlocked", 1077: "blockLooseWaste", 1069: "debrisStill" },
+    SUBMIT:  { 1027: "laneDump", 1036: "litteredStreet", 1048: "openDump", 1041: "drainBlocked", 1084: "overflowPark", 1091: "busBags", 1077: "blockOverflow", 1069: "debrisFootpath", 1062: "gateBags", 1055: "brokenLid" },
+    PROPOSE: { 1027: "laneClean", 1036: "sweptStreet", 1048: "openClean", 1041: "drainClear", 1091: "busClean", 1077: "blockEmptyBin", 1069: "cornerBin", 1062: "laneClean", 1055: "newBin" },
+    DISPUTE: { 1027: "laneDump", 1041: "drainBlocked", 1077: "blockLooseWaste", 1069: "debrisStill" },
   };
   for (const d of drafts) {
     const name = ART[d.type] && ART[d.type][d.caseId];

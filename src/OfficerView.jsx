@@ -3,7 +3,7 @@
 // then the citizen confirms / disputes, or the 72h timer closes it as Uncontested.
 import { useState, useMemo, useEffect } from "react";
 import {
-  STATES, CLOSED_STATES, AUTO_CLOSE_MS, HOUR, PEOPLE,
+  STATES, CLOSED_STATES, AUTO_CLOSE_MS, HOUR, PEOPLE, officerWarnings, MAX_OFFICER_WARNINGS,
   checkTransition, useCivicLedger, useNow, verifyLedger,
 } from "./civicLedger";
 import {
@@ -344,6 +344,7 @@ export default function OfficerView({ session, onSignOut }) {
 function OfficerScreen({ session, onSignOut }) {
   const now = useNow();
   const { ready, events, cases, dispatch, reset, storageWarning } = useCivicLedger(now);
+  const myWarnings = useMemo(() => officerWarnings(events, ME.id, now), [events, now]);
   const [filter, setFilter] = useState("action");
   const [selectedId, setSelectedId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -429,6 +430,7 @@ function OfficerScreen({ session, onSignOut }) {
                 { label: "Open", value: groups.action.length + groups.waiting.length + groups.review.length },
                 { label: "Completed", value: groups.closed.length },
                 { label: "Avg rating", value: (() => { const a = averageRating(groups.all); return a ? `${a.avg.toFixed(1)}★` : "–"; })() },
+                { label: "Warnings (7 days)", value: `${myWarnings.thisWeek.length}/${MAX_OFFICER_WARNINGS}` },
               ]}
             />
             <button type="button" onClick={onSignOut} className="rounded-full bg-white px-3 py-1 font-semibold text-[#0e4f4f] hover:bg-slate-100">
@@ -469,6 +471,8 @@ function OfficerScreen({ session, onSignOut }) {
                 );
               })}
             </div>
+
+            <MyWarnings w={myWarnings} onOpen={(id) => { const c = groups.all.find((x) => x.id === id); setFilter(c && c.state === STATES.CONTESTED ? "review" : c && CLOSED_STATES.includes(c.state) ? "closed" : "action"); setSelectedId(id); }} />
 
             <div className="mt-6 grid gap-6 lg:grid-cols-[340px_1fr]">
               {/* queue */}
@@ -601,6 +605,36 @@ function MyRatingPanel({ cases, onOpen }) {
           {showAll ? "Show less" : `See all ${rated.length} reviews`}
         </button>
       )}
+    </section>
+  );
+}
+
+/* ---------------- supervisor warnings to this officer ---------------- */
+function MyWarnings({ w, onOpen }) {
+  if (!w.thisWeek.length) return null;
+  const n = w.thisWeek.length;
+  const daysLeft = (at) => Math.max(1, Math.ceil((at + 7 * 24 * 3600 * 1000 - Date.now()) / (24 * 3600 * 1000)));
+  return (
+    <section role="alert" aria-labelledby="warn-title" className={`mt-6 rounded-2xl p-4 ring-1 ${w.escalated ? "bg-rose-50 ring-rose-300" : "bg-amber-50 ring-amber-300"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="warn-title" className={`text-sm font-semibold ${w.escalated ? "text-rose-900" : "text-amber-950"}`}>
+          ⚠ You have {n} of {MAX_OFFICER_WARNINGS} warnings this week for rework not done properly
+        </h2>
+        <span className="text-xs text-slate-600">Warnings expire after 7 days</span>
+      </div>
+      {w.escalated && (
+        <p className="mt-1 text-sm text-rose-800">You've reached {MAX_OFFICER_WARNINGS} warnings in 7 days. Your record has been escalated to the department head for review.</p>
+      )}
+      <ul className="mt-3 space-y-2">
+        {w.thisWeek.map((x, i) => (
+          <li key={i}>
+            <button type="button" onClick={() => onOpen(x.caseId)} className="w-full rounded-xl bg-white/80 px-3 py-2 text-left ring-1 ring-black/5 hover:ring-amber-400">
+              <p className="text-sm text-slate-800">“{x.reason}”</p>
+              <p className="mt-0.5 text-xs text-slate-500">Case #{x.caseId} · {x.by} · {stamp(x.at)} · expires in {daysLeft(x.at)} day{daysLeft(x.at) > 1 ? "s" : ""}</p>
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

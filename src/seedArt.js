@@ -250,6 +250,12 @@ const SCENES = {
   },
   sweptStreet: () => backdrop("street") + tree(590, 335, 0.7) +
     `<rect x="120" y="250" width="6" height="140" fill="#7a5638" transform="rotate(18 123 320)"/><path d="M150 380 l40 8 l-6 18 l-48 -6 z" fill="#c9a24a" transform="rotate(18 160 390)"/>`,
+  laneDump: () => {
+    const r = rng(111);
+    let s = backdrop("lane");
+    for (let i = 0; i < 12; i++) s += bag(240 + r() * 200, 360 + r() * 50, 18 + r() * 10, BAG_COLORS[Math.floor(r() * BAG_COLORS.length)]);
+    return s + litter(330, 400, 300, 50, 26, r) + `<rect x="200" y="455" width="240" height="14" fill="#5a4a32"/>`;
+  },
   newBin: () => backdrop("street") + bin(250, 395, { color: "#1f8a4c", shine: true }) +
     `<rect x="380" y="300" width="120" height="34" rx="6" fill="#ffffff" opacity="0.9"/><text x="440" y="322" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#1f8a4c" text-anchor="middle">NEW BIN</text>`,
 };

@@ -2,7 +2,7 @@
 // Reviews disputes side by side (complaint · officer proof · citizen counter-proof)
 // and issues a binding, reasoned ruling: Uphold (close) or Overturn (order rework).
 import { useState, useMemo, useEffect } from "react";
-import { STATES, CLOSED_STATES, AUTO_CLOSE_MS, PEOPLE, useCivicLedger, useNow, verifyLedger } from "./civicLedger";
+import { STATES, CLOSED_STATES, AUTO_CLOSE_MS, PEOPLE, useCivicLedger, useNow, verifyLedger, officerWarnings, MAX_OFFICER_WARNINGS } from "./civicLedger";
 import {
   dur, ago, stamp, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
   TopBar, AccessDenied, SiteFooter, LedgerBar, openPhotoViewer, StarRating, RatingCard, averageRating, CaseTimer,
@@ -73,13 +73,19 @@ function SupervisorScreen({ session, onSignOut }) {
     return Object.values(byOfficer);
   }, [events]);
 
-  async function rule(c, action, data) {
+  const damodarWarnings = useMemo(() => officerWarnings(events, "damodar", now), [events, now]);
+
+  async function rule(c, action, data, warning) {
     try {
+      if (warning) {
+        if (officerWarnings(events, warning.officerId, Date.now()).thisWeek.length >= MAX_OFFICER_WARNINGS) {
+          throw new Error(`${warning.officerName} already has ${MAX_OFFICER_WARNINGS} warnings this week.`);
+        }
+        await dispatch(c.id, "WARN_OFFICER", me, { ...warning, kind: "POOR_REWORK" });
+      }
       await dispatch(c.id, action, me, data);
-      setToast({
-        ok: true,
-        text: action === "UPHOLD" ? `Ruling recorded. Case #${c.id} closed.` : `Ruling recorded. Rework ordered on #${c.id}.`,
-      });
+      const base = action === "UPHOLD" ? `Ruling recorded. Case #${c.id} closed.` : `Ruling recorded. Rework ordered on #${c.id}.`;
+      setToast({ ok: true, text: warning ? `${base} Warning issued to ${warning.officerName}.` : base });
       setSelectedId(null);
     } catch (err) {
       setToast({ ok: false, text: err.message });
@@ -155,13 +161,13 @@ function SupervisorScreen({ session, onSignOut }) {
                   );
                 })}
 
-                <OfficerTable rows={officerStats} />
+                <OfficerTable rows={officerStats} events={events} now={now} />
                 <FlaggedAccounts />
               </aside>
 
               <div>
                 {selected ? (
-                  <CaseDetail key={selected.id + selected.events.length} c={selected} now={now} onRule={rule} />
+                  <CaseDetail key={selected.id + selected.events.length} c={selected} now={now} onRule={rule} officerWarn={damodarWarnings} />
                 ) : (
                   <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Select a case.</p>
                 )}
@@ -184,7 +190,19 @@ function SupervisorScreen({ session, onSignOut }) {
   );
 }
 
-function OfficerTable({ rows }) {
+function OfficerTable({ rows, events, now }) {
+  const warnRow = (id) => {
+    const w = officerWarnings(events, id, now);
+    const n = w.thisWeek.length;
+    return (
+      <div className={`mt-2 flex items-center justify-between gap-1 rounded-lg px-2 py-1.5 ring-1 ${w.escalated ? "bg-rose-50 ring-rose-200" : "bg-slate-50 ring-slate-200"}`}>
+        <span className="text-[11px] font-medium text-slate-700">Warnings this week</span>
+        <span className={`text-[11px] font-bold ${w.escalated ? "text-rose-700" : n ? "text-amber-800" : "text-slate-500"}`}>
+          {n}/{MAX_OFFICER_WARNINGS}{w.escalated ? " · escalated" : ""}
+        </span>
+      </div>
+    );
+  };
   return (
     <Card className="!p-4">
       <h3 className="text-sm font-semibold">Officer accountability</h3>
@@ -203,6 +221,7 @@ function OfficerTable({ rows }) {
                 <Stat label="Uncontested" value={r.uncontested} />
                 <Stat label="Upheld" value={r.upheld} />
               </dl>
+              {warnRow(r.id)}
               <div className="mt-2 flex flex-wrap items-center justify-between gap-1 rounded-lg bg-amber-50 px-2 py-1.5 ring-1 ring-amber-200">
                 <span className="text-[11px] font-medium text-amber-900">Resident rating</span>
                 {r.ratingCount
@@ -227,7 +246,7 @@ function Stat({ label, value }) {
 }
 
 /* ---------------- case detail + ruling ---------------- */
-function CaseDetail({ c, now, onRule }) {
+function CaseDetail({ c, now, onRule, officerWarn }) {
   const contested = c.state === STATES.CONTESTED;
   return (
     <div className="space-y-4">
@@ -259,7 +278,7 @@ function CaseDetail({ c, now, onRule }) {
             </div>
           </section>
           <PhotoCheck key={c.id} c={c} />
-          <RulingForm c={c} onRule={onRule} />
+          <RulingForm c={c} onRule={onRule} officerWarn={officerWarn} />
         </>
       ) : (
         <ReadOnlyPanel c={c} now={now} />
@@ -270,20 +289,26 @@ function CaseDetail({ c, now, onRule }) {
   );
 }
 
-function RulingForm({ c, onRule }) {
+function RulingForm({ c, onRule, officerWarn }) {
   const [ruling, setRuling] = useState("");
   const [bulkTruck, setBulkTruck] = useState(false);
   const [busy, setBusy] = useState(null);
-  const ok = ruling.trim().length >= MIN_RULING;
+  const [warn, setWarn] = useState(false);
+  const [warnReason, setWarnReason] = useState("");
+  const hadRework = (c.reworkCount || 0) > 0; // only for rework that wasn't done properly
+  const weekCount = officerWarn ? officerWarn.thisWeek.length : 0;
+  const warnFull = weekCount >= MAX_OFFICER_WARNINGS;
+  const warnOk = !warn || warnReason.trim().length >= 15;
+  const ok = ruling.trim().length >= MIN_RULING && warnOk;
 
   async function submit(action) {
     if (!ok || busy) return;
     setBusy(action);
-    await onRule(c, action, {
-      ruling: ruling.trim(),
-      outcome: action === "UPHOLD" ? "UPHELD" : "OVERTURNED",
-      bulkTruckDispatched: bulkTruck,
-    });
+    await onRule(
+      c, action,
+      { ruling: ruling.trim(), outcome: action === "UPHOLD" ? "UPHELD" : "OVERTURNED", bulkTruckDispatched: bulkTruck },
+      warn && hadRework && !warnFull ? { officerId: "damodar", officerName: "Officer Damodar", reason: warnReason.trim() } : null
+    );
     setBusy(null);
   }
 
@@ -308,6 +333,46 @@ function RulingForm({ c, onRule }) {
         <input type="checkbox" checked={bulkTruck} onChange={(e) => setBulkTruck(e.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-[#1e3a5f]" />
         Dispatch bulk pickup truck
       </label>
+
+      {hadRework && (
+        <div className={`mt-4 rounded-xl p-4 ring-1 ${warnFull ? "bg-rose-50 ring-rose-200" : "bg-amber-50 ring-amber-200"}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-900">Rework wasn't done properly?</p>
+            <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${warnFull ? "bg-rose-600 text-white" : "bg-amber-200 text-amber-950"}`}>
+              Officer Damodar: {weekCount}/{MAX_OFFICER_WARNINGS} warnings this week
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-600">
+            This case was already sent back for rework {c.reworkCount === 1 ? "once" : `${c.reworkCount} times`} and has been disputed again.
+          </p>
+          {warnFull ? (
+            <p className="mt-2 text-sm text-rose-800">
+              Officer Damodar already has {MAX_OFFICER_WARNINGS} warnings in the last 7 days and has been escalated to the department head. No more warnings can be issued this week.
+            </p>
+          ) : (
+            <>
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm font-medium">
+                <input type="checkbox" checked={warn} onChange={(e) => setWarn(e.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-amber-600" />
+                Issue a formal warning to Officer Damodar
+              </label>
+              {warn && (
+                <>
+                  <label htmlFor={`warn-${c.id}`} className="mt-3 block text-xs font-medium text-slate-700">Reason for the warning (the officer will see this)</label>
+                  <textarea
+                    id={`warn-${c.id}`} rows={2} value={warnReason} onChange={(e) => setWarnReason(e.target.value)}
+                    placeholder="e.g. Second proof again ignored the blocked drain named in the rework order."
+                    className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-400/30"
+                  />
+                  <p className={`mt-1 text-xs ${warnReason.trim().length >= 15 ? "text-emerald-700" : "text-slate-500"}`}>{warnReason.trim().length}/15 characters minimum</p>
+                  {weekCount + 1 >= MAX_OFFICER_WARNINGS && (
+                    <p className="mt-1 text-xs font-semibold text-rose-700">This will be warning {MAX_OFFICER_WARNINGS} of {MAX_OFFICER_WARNINGS} this week and escalates the officer to the department head.</p>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <button
