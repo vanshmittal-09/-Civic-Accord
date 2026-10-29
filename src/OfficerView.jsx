@@ -483,7 +483,7 @@ function OfficerScreen({ session, onSignOut }) {
               })}
             </div>
 
-            <MyWarnings w={myWarnings} onOpen={(id) => { const c = groups.all.find((x) => x.id === id); setFilter(c && c.state === STATES.CONTESTED ? "review" : c && CLOSED_STATES.includes(c.state) ? "closed" : "action"); setSelectedId(id); }} />
+            <MyWarnings w={myWarnings} />
 
             <div className="mt-6 grid gap-6 lg:grid-cols-[340px_1fr]">
               {/* queue */}
@@ -513,6 +513,7 @@ function OfficerScreen({ session, onSignOut }) {
                     </button>
                   );
                 })}
+                <MyWarningsPanel w={myWarnings} now={now} onOpen={(id) => { const c = groups.all.find((x) => x.id === id); setFilter(c && c.state === STATES.CONTESTED ? "review" : c && CLOSED_STATES.includes(c.state) ? "closed" : "action"); setSelectedId(id); }} />
                 <MyRatingPanel cases={groups.all} onOpen={(id) => { setFilter("closed"); setSelectedId(id); }} />
               </aside>
 
@@ -621,42 +622,83 @@ function MyRatingPanel({ cases, onOpen }) {
 }
 
 /* ---------------- supervisor warnings to this officer ---------------- */
-function MyWarnings({ w, onOpen }) {
+function MyWarnings({ w }) {
   if (!w.thisWeek.length && !w.suspended) return null;
   const n = w.thisWeek.length;
   const red = w.suspended || n >= MAX_OFFICER_WARNINGS;
-  const daysLeft = (at) => Math.max(1, Math.ceil((at + 7 * 24 * 3600 * 1000 - Date.now()) / (24 * 3600 * 1000)));
   return (
-    <section role="alert" aria-labelledby="warn-title" className={`mt-6 rounded-2xl p-4 ring-1 ${red ? "bg-rose-50 ring-rose-300" : "bg-amber-50 ring-amber-300"}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <section role="alert" aria-labelledby="warn-title" className={`mt-6 flex flex-wrap items-center justify-between gap-2 rounded-2xl px-4 py-3 ring-1 ${red ? "bg-rose-50 ring-rose-300" : "bg-amber-50 ring-amber-300"}`}>
+      <div>
         <h2 id="warn-title" className={`text-sm font-semibold ${red ? "text-rose-900" : "text-amber-950"}`}>
-          {w.suspended
-            ? `⛔ You are suspended until ${stamp(w.suspended.until)}`
-            : `⚠ You have ${n} of ${MAX_OFFICER_WARNINGS} warnings this week`}
+          {w.suspended ? `⛔ You are suspended until ${stamp(w.suspended.until)}` : `⚠ You have ${n} of ${MAX_OFFICER_WARNINGS} warnings this week`}
         </h2>
-        <span className="text-xs text-slate-600">Max {MAX_OFFICER_WARNINGS} per week · warnings expire after 7 days</span>
+        <p className={`text-xs ${red ? "text-rose-800" : "text-amber-900"}`}>
+          {w.suspended
+            ? `You exceeded ${MAX_OFFICER_WARNINGS} warnings in a week, so you can't submit resolutions until it ends or a supervisor reinstates you.`
+            : n >= MAX_OFFICER_WARNINGS
+              ? "You've reached the limit. One more warning this week will suspend you for 7 days."
+              : `More than ${MAX_OFFICER_WARNINGS} warnings in a week means a 7-day suspension.`}
+        </p>
       </div>
-      <p className={`mt-1 text-sm ${red ? "text-rose-800" : "text-amber-900"}`}>
-        {w.suspended
-          ? `You exceeded ${MAX_OFFICER_WARNINGS} warnings in a week, so you can't submit resolutions until the suspension ends or a supervisor reinstates you.`
-          : n >= MAX_OFFICER_WARNINGS
-            ? "You've reached the limit. One more warning this week will suspend you for 7 days."
-            : `Warnings are given for incomplete work or a tampered / fake proof photo. More than ${MAX_OFFICER_WARNINGS} in a week means suspension.`}
-      </p>
-      <ul className="mt-3 space-y-2">
-        {w.thisWeek.map((x, i) => (
-          <li key={i}>
-            <button type="button" onClick={() => onOpen(x.caseId)} className="w-full rounded-xl bg-white/80 px-3 py-2 text-left ring-1 ring-black/5 hover:ring-amber-400">
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${x.kind === "TAMPERED" ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-900"}`}>
-                {WARNING_KINDS[x.kind].label}
-              </span>
-              {x.suspends && <span className="ml-1 rounded-full bg-rose-600 px-2 py-0.5 text-[11px] font-bold text-white">Led to suspension</span>}
-              <p className="mt-1 text-sm text-slate-800">“{x.reason}”</p>
-              <p className="mt-0.5 text-xs text-slate-500">Case #{x.caseId} · {x.by} · {stamp(x.at)} · expires in {daysLeft(x.at)} day{daysLeft(x.at) > 1 ? "s" : ""}</p>
-            </button>
-          </li>
+      <span className="text-xs text-slate-600">Details in “My warnings” on the left</span>
+    </section>
+  );
+}
+
+function MyWarningsPanel({ w, now, onOpen }) {
+  const n = w.thisWeek.length;
+  const daysLeft = (at) => Math.max(1, Math.ceil((at + 7 * 24 * 3600 * 1000 - now) / (24 * 3600 * 1000)));
+  const active = (x) => now - x.at < 7 * 24 * 3600 * 1000 && x.at > (w.reinstatedAt || 0);
+  const ring = w.suspended ? "ring-rose-300" : n ? "ring-amber-300" : "ring-slate-200";
+  return (
+    <section aria-labelledby="my-warn-title" className={`!mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ${ring}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 id="my-warn-title" className="text-xs font-semibold uppercase tracking-wide text-slate-500">My warnings</h2>
+          <p className="mt-0.5 text-[11px] text-slate-500">Max {MAX_OFFICER_WARNINGS} per week, then 7-day suspension.</p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-bold ${w.suspended ? "bg-rose-600 text-white" : n ? "bg-amber-200 text-amber-950" : "bg-emerald-100 text-emerald-800"}`}>
+          {w.suspended ? "Suspended" : `${n}/${MAX_OFFICER_WARNINGS} this week`}
+        </span>
+      </div>
+      <div className="mt-2 flex gap-1" aria-hidden="true">
+        {Array.from({ length: MAX_OFFICER_WARNINGS }, (_, i) => (
+          <span key={i} className={`h-1.5 flex-1 rounded-full ${i < n ? (w.suspended ? "bg-rose-500" : "bg-amber-500") : "bg-slate-200"}`} />
         ))}
-      </ul>
+      </div>
+
+      {w.suspended && (
+        <p className="mt-3 rounded-lg bg-rose-50 px-2.5 py-2 text-xs text-rose-900 ring-1 ring-rose-200">
+          <span className="font-semibold">Suspended until {stamp(w.suspended.until)}.</span> You can't submit resolutions until then, unless a supervisor reinstates you.
+        </p>
+      )}
+
+      {w.all.length === 0 ? (
+        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800 ring-1 ring-emerald-200">No warnings. Keep it up!</p>
+      ) : (
+        <ul className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+          {w.all.map((x, i) => {
+            const live = active(x);
+            return (
+              <li key={i}>
+                <button type="button" onClick={() => onOpen(x.caseId)} className={`w-full rounded-lg px-2.5 py-2 text-left ring-1 transition hover:ring-teal-500 ${live ? "bg-white ring-slate-200" : "bg-slate-50 opacity-70 ring-slate-200"}`}>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${x.kind === "TAMPERED" ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-900"}`}>
+                      {WARNING_KINDS[x.kind].label}
+                    </span>
+                    {x.suspends && <span className="rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">Led to suspension</span>}
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${live ? "bg-sky-50 text-sky-800" : "bg-slate-200 text-slate-600"}`}>
+                      {live ? `Expires in ${daysLeft(x.at)}d` : "Expired"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-800">“{x.reason}”</p>
+                  <p className="mt-0.5 text-[10px] text-slate-500">Case #{x.caseId} · {x.by} · {stamp(x.at)}</p>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
