@@ -8,7 +8,7 @@ import {
 } from "./civicLedger";
 import {
   STATUS_META, EVENT_LABEL, CHECKS, CHECK_LABEL, dur, ago, stamp, queueMeta, stripAndCompress,
-  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, openPhotoViewer, usePhotoGuard, PhotoGuardNotice, RatingCard, averageRating, StarRating, CaseTimer,
+  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, openPhotoViewer, usePhotoGuard, PhotoGuardNotice, PhotoChecking, RatingCard, averageRating, StarRating, CaseTimer,
 } from "./shared";
 
 const ME = PEOPLE.damodar;
@@ -20,6 +20,7 @@ const MAX_PHOTOS = 4;
 function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
   const [photos, setPhotos] = useState([]);
   const [photoErr, setPhotoErr] = useState("");
+  const [checking, setChecking] = useState(false);
   const guard = usePhotoGuard({ id: ME.id, name: ME.name, role: ME.role }, { onFlag: (flagged) => onAiFlag(c, flagged) });
   const [note, setNote] = useState("");
   const [checks, setChecks] = useState(() => Object.fromEntries(CHECKS.map((c) => [c.key, false])));
@@ -36,6 +37,7 @@ function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
     const room = MAX_PHOTOS - photos.length;
     const errors = [];
     const added = [];
+    setChecking(true);
     for (const f of files) {
       if (added.length >= room) { errors.push(`Only ${MAX_PHOTOS} photos allowed.`); break; }
       if (!f.type.startsWith("image/")) { errors.push(`${f.name} isn't an image.`); continue; }
@@ -46,6 +48,7 @@ function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
       try {
         const src = await stripAndCompress(f);
         const check = await guard.check(f, src); // AI-photo screening (silent for real photos)
+        if (check.unchecked) { errors.push(`The AI photo check couldn't run for ${f.name}, so it wasn't added. Check your connection and try again.`); continue; }
         if (!check.ok) { if (check.locked) break; continue; }
         const signals = check.signals;
         added.push({
@@ -60,6 +63,7 @@ function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
         errors.push(`Couldn't read ${f.name}.`);
       }
     }
+    setChecking(false);
     setPhotos((ps) => [...ps, ...added].slice(0, MAX_PHOTOS));
     setPhotoErr(errors.join(" "));
   }
@@ -138,6 +142,7 @@ function ProposalForm({ c, now, onSubmit, isRework, onAiFlag }) {
               </div>
             </>
           )}
+          {checking && <PhotoChecking />}
           {photoErr && <p className="mt-2 text-sm text-rose-700">{photoErr}</p>}
         </div>
 

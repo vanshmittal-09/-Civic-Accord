@@ -5,6 +5,7 @@ import logoUrl from "./assets/logo.png";
 import { getResident, STAFF_PROFILES } from "./accounts";
 import { readPhotoSignals } from "./imageCheck";
 import { guardUpload, getWarnings, MAX_WARNINGS } from "./photoGuard";
+import { loadDetector } from "./aiDetector";
 
 export const MAX_PHOTOS = 4;
 export const MAX_PHOTO_AGE_MS = 24 * HOUR;
@@ -218,6 +219,7 @@ export function ComplaintPhotos({ c }) {
 /** Multi-photo picker: camera on phones, 24h freshness check, metadata stripped. */
 export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take photos", hint = "Photos older than 24h are rejected.", tone = "teal", uploader }) {
   const [err, setErr] = useState("");
+  const [checking, setChecking] = useState(false);
   const guard = usePhotoGuard(uploader);
   const tones = {
     teal: "border-teal-300 bg-teal-50/60 text-teal-800 hover:bg-teal-50 focus-within:ring-teal-500",
@@ -231,6 +233,7 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
     const room = max - photos.length;
     const errors = [];
     const added = [];
+    setChecking(true);
     for (const f of files) {
       if (added.length >= room) { errors.push(`Only ${max} photos allowed.`); break; }
       if (!f.type.startsWith("image/")) { errors.push(`${f.name} isn't an image.`); continue; }
@@ -238,12 +241,14 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
       try {
         const src = await stripAndCompress(f);
         const check = await guard.check(f, src); // AI-photo screening (silent for real photos)
+        if (check.unchecked) { errors.push(`The AI photo check couldn't run for ${f.name}, so it wasn't added. Check your connection and try again.`); continue; }
         if (!check.ok) { if (check.locked) break; continue; }
         added.push({ id: `${f.name}-${f.lastModified}-${Math.random().toString(36).slice(2, 7)}`, src, capturedAt: f.lastModified, signals: check.signals });
       } catch {
         errors.push(`Couldn't read ${f.name}.`);
       }
     }
+    setChecking(false);
     onChange([...photos, ...added].slice(0, max));
     setErr(errors.join(" "));
   }
@@ -290,6 +295,7 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
           </p>
         </>
       )}
+      {checking && <PhotoChecking />}
       {err && <p className="mt-2 text-sm text-rose-700">{err}</p>}
     </div>
   );
@@ -884,6 +890,7 @@ export function usePhotoGuard(uploader, opts = {}) {
   const [notice, setNotice] = useState(null);
   const uid = uploader && uploader.id;
   const ledgerMode = typeof opts.onFlag === "function";
+  useEffect(() => { if (uploader) loadDetector().catch(() => {}); }, [uid]); // warm up the AI model
   useEffect(() => {
     if (!uid || ledgerMode) return;
     let alive = true;
@@ -898,6 +905,7 @@ export function usePhotoGuard(uploader, opts = {}) {
     if (locked) return { ok: false, locked: true };
     if (ledgerMode) {
       const r = await guardUpload(file, src, uploader, { record: false });
+      if (r.unchecked) return r;
       if (!r.ok) {
         const info = (await opts.onFlag(r.flagged)) || {};
         setNotice({ officer: true, reason: r.flagged.reason, detector: r.flagged.detector, count: info.count, suspended: info.suspended });
@@ -906,6 +914,7 @@ export function usePhotoGuard(uploader, opts = {}) {
       return r;
     }
     const r = await guardUpload(file, src, uploader);
+    if (r.unchecked) return r;
     if (!r.ok) {
       setCount(r.count);
       setNotice({ count: r.count, reason: r.reason, detector: r.flagged && r.flagged.detector });
@@ -913,6 +922,15 @@ export function usePhotoGuard(uploader, opts = {}) {
     return r;
   }
   return { count, locked, notice, check, dismiss: () => setNotice(null) };
+}
+
+export function PhotoChecking() {
+  return (
+    <p role="status" className="mt-2 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+      <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-400 border-t-transparent" aria-hidden="true" />
+      Checking photo with the Civic Accord AI Detector…
+    </p>
+  );
 }
 
 export function PhotoGuardNotice({ guard }) {

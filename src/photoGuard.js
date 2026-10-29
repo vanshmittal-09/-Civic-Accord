@@ -10,6 +10,7 @@
 // Warnings are stored in Supabase (table photo_warnings) when connected, otherwise in this browser.
 import { CLOUD, getSupabase } from "./supabase";
 import { readPhotoSignals, assessPhoto, detectAiOnline, PROVIDER_NAME } from "./imageCheck";
+import { detectAi, decide, DETECTOR_NAME } from "./aiDetector";
 
 export const MAX_WARNINGS = 3;
 const AI_SCORE_LIMIT = 0.7; // detection model score at or above this counts as AI-generated
@@ -106,28 +107,32 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
 }
 
-/** Decides whether a photo is AI-generated. Combines built-in checks with the server model when available. */
+/**
+ * Decides whether a photo is AI-generated.
+ * Primary: our own in-browser model (aiDetector.js) combined with file evidence.
+ * Optional second opinion: a server-side detector (Hive / Sightengine) when Supabase is set up.
+ */
 export async function screenPhoto(file, src) {
   const signals = await readPhotoSignals(file);
-  const local = assessPhoto({ src, signals });
-  let score = null;
-  let provider = "local";
-  if (CLOUD) {
+  let verdict = decide(signals, null); // AI-tool traces in the file are enough on their own
+  if (!verdict) {
+    let model;
     try {
-      const r = await withTimeout(detectAiOnline(src), 10000);
-      score = r.aiGenerated;
-      provider = r.provider;
-    } catch { score = null; }
+      model = await withTimeout(detectAi(file), 30000);
+    } catch {
+      // never accept a photo unchecked: ask the user to try again instead (no warning given)
+      return { isAi: false, unchecked: true, signals };
+    }
+    verdict = decide(signals, model);
   }
-  const hasAiTraces = Boolean(signals && signals.aiMarkers && signals.aiMarkers.length);
-  const isAi = hasAiTraces || (score != null ? score >= AI_SCORE_LIMIT : local.level === "high");
-  const detector = PROVIDER_NAME[provider] || "AI detector";
-  const reason = score != null && score >= AI_SCORE_LIMIT
-    ? `${detector}: ${Math.round(score * 100)}% likely AI-generated`
-    : hasAiTraces
-      ? `AI-tool traces in the file (${signals.aiMarkers.join(", ")})`
-      : `${detector}: several signs of an AI-generated image`;
-  return { isAi, signals, score, reason, provider, detector };
+  let online = null;
+  if (CLOUD) {
+    try { online = await withTimeout(detectAiOnline(src), 10000); } catch { online = null; }
+  }
+  if (!verdict.isAi && online && online.aiGenerated >= AI_SCORE_LIMIT) {
+    verdict = { isAi: true, score: online.aiGenerated, reason: `${PROVIDER_NAME[online.provider] || "AI detector"}: ${Math.round(online.aiGenerated * 100)}% likely AI-generated` };
+  }
+  return { isAi: verdict.isAi, signals, score: verdict.score, reason: verdict.reason, provider: "civic", detector: DETECTOR_NAME };
 }
 
 /**
@@ -136,6 +141,7 @@ export async function screenPhoto(file, src) {
  */
 export async function guardUpload(file, src, uploader, { record = true } = {}) {
   const result = await screenPhoto(file, src);
+  if (result.unchecked) return { ok: false, unchecked: true };
   if (!result.isAi || !uploader) return { ok: true, signals: result.signals };
   if (!record) return { ok: false, flagged: result }; // caller records it (officers: in the audit ledger)
   const list = await addWarning(uploader, result.reason, result.score);

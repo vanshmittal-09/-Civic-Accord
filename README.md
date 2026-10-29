@@ -58,12 +58,23 @@ If the database can't be reached (no internet, wrong keys), the app shows a yell
 
 > ⚠️ Before real use: remove the `reset_demo` function from the database (anyone using the app can call it), move officer and supervisor accounts out of the code into the database, and store photos in Supabase Storage instead of inside the ledger.
 
-## AI photo check (Hive AI Detector)
+## Civic Accord AI Detector (our own model)
+
+Every photo a resident attaches to a complaint or dispute, and every work-completion photo an officer uploads, is checked in the browser by **our own AI detector** (`src/aiDetector.js`).
+It is a MobileNetV2 backbone plus our classifier, trained on real vs AI-generated images (see [`training/`](training/README.md)). On the held-out test set it is **96.5% accurate**.
+It runs with onnxruntime-web; the engine and model are served with the app from `public/ort/` and `public/models/`. The photo never leaves the device for this check.
+
+- If the check can't run (for example, the model failed to load), the photo is **not** accepted, and the user is asked to try again.
+- Rules after a photo is rejected:
+  - **Residents:** warning n of 3; at 3 the account is suspended.
+  - **Officers:** a tampered-image warning goes into the audit ledger and the supervisor is notified; more than 3 a week means suspension.
+
+## AI photo check (supervisor) and optional second opinion
 
 When a dispute reaches the supervisor, **AI photo check** reviews every photo in the case and gives each one an advisory verdict: *Looks like a real camera photo*, *Needs a closer look*, or *Likely AI-generated or edited*, with the reasons.
 
 - **Built-in checks (no setup):** when a photo is taken, before its metadata is stripped, the app keeps only the camera make/model, the capture time and any editing software, and looks for traces AI tools leave in files (Midjourney, DALL·E, Stable Diffusion settings, the IPTC "made by AI" tag, common AI image sizes). Location is never kept.
-- **Hive AI Detector (recommended):** a Supabase Edge Function (`supabase/functions/detect-ai-image`) sends each photo to [Hive's AI-generated image detection](https://docs.thehive.ai/docs/ai-image-and-video-detection) and returns a 0–100% "AI-generated" score. The key stays on the server. To turn it on:
+- **Optional server second opinion (Hive):** a Supabase Edge Function (`supabase/functions/detect-ai-image`) sends each photo to [Hive's AI-generated image detection](https://docs.thehive.ai/docs/ai-image-and-video-detection) and returns a 0–100% "AI-generated" score. The key stays on the server. To turn it on:
   1. Get a Hive API key for the AI-Generated Image Detection model.
   2. Install the [Supabase CLI](https://supabase.com/docs/guides/cli), then in this folder run:
      ```bash
@@ -79,7 +90,7 @@ When a dispute reaches the supervisor, **AI photo check** reviews every photo in
 
 ### Upload screening, warnings and suspension
 
-Every photo is screened the moment it's added (`src/photoGuard.js`): the built-in checks plus the Hive detector when it's deployed. Real photos are added silently.
+Every photo is screened the moment it's added (`src/photoGuard.js`) by the Civic Accord AI Detector, plus file evidence. When Supabase is set up, the optional server detector (Hive / Sightengine) adds a second opinion. Real photos are added silently.
 
 - **Residents (complaint and dispute photos):** an AI-generated photo is rejected, so the complaint can't be submitted with it, and the resident gets "Warning n of 3". At **3 warnings the account is suspended**: no new complaints or disputes until the helpline or a supervisor lifts it from **Resident accounts flagged**. Warnings are stored in the `photo_warnings` table when Supabase is connected.
 - **Officers (work-completion photos):** an AI-generated photo is rejected and recorded in the audit ledger (`AI_FLAG`) as a *tampered-image* warning. The supervisor sees it straight away (alert at the top, a badge on the case, the case history and the **Warnings issued** column). It counts toward the officer's limit of 3 warnings a week; one more suspends the officer for 7 days.
