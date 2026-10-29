@@ -2,10 +2,12 @@
 // All three persona screens (Citizen / Officer / Supervisor) import this file,
 // so the rules live in ONE place and no UI can bypass them.
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { scene } from "./seedArt";
+import { CLOUD, getSupabase } from "./supabase";
 
 export const HOUR = 60 * 60 * 1000;
 export const AUTO_CLOSE_MS = 72 * HOUR;
-const STORAGE_KEY = "civicaccord_ledger_v1";
+const STORAGE_KEY = "civicaccord_ledger_v6"; // v6: resident ratings
 const GENESIS = "0".repeat(64);
 
 // In-memory copy shared by every screen on the page. Used when browser storage is
@@ -35,6 +37,8 @@ export const ACTIONS = {
   AUTO_CLOSE:   { from: [STATES.PROPOSED],                 to: STATES.UNCONTESTED,     roles: ["SYSTEM"] },
   ORDER_REWORK: { from: [STATES.CONTESTED],                to: STATES.REWORK,          roles: ["SUPERVISOR"] },
   UPHOLD:       { from: [STATES.CONTESTED],                to: STATES.REVIEWER_CLOSED, roles: ["SUPERVISOR"] },
+  // a resident can rate a closed case once (state doesn't change)
+  RATE:         { from: CLOSED_STATES,                     to: null,                   roles: ["CITIZEN"] },
 };
 
 const VERB = {
@@ -45,6 +49,7 @@ const VERB = {
   AUTO_CLOSE: "auto-close a case",
   ORDER_REWORK: "order rework",
   UPHOLD: "close this case",
+  RATE: "rate this resolution",
 };
 
 export const PEOPLE = {
@@ -54,6 +59,8 @@ export const PEOPLE = {
   kabir:   { id: "kabir",   name: "Kabir",   role: "CITIZEN" },
   sana:    { id: "sana",    name: "Sana",    role: "CITIZEN" },
   vikram:  { id: "vikram",  name: "Vikram",  role: "CITIZEN" },
+  farah:   { id: "farah",   name: "Farah",   role: "CITIZEN" },
+  anil:    { id: "anil",    name: "Anil",    role: "CITIZEN" },
   damodar: { id: "damodar", name: "Officer Damodar",  role: "OFFICER" },
   patel:   { id: "patel",   name: "Supervisor Patel", role: "SUPERVISOR" },
   system:  { id: "system",  name: "System (72h timer)", role: "SYSTEM" },
@@ -78,6 +85,9 @@ export function checkTransition(caseObj, action, role, actorId) {
   if (role === "CITIZEN" && caseObj && caseObj.citizenId !== actorId) {
     return "Blocked: only the citizen who filed this case can respond to it.";
   }
+  if (action === "RATE" && caseObj && caseObj.rating) {
+    return "You've already rated this resolution.";
+  }
   return null;
 }
 
@@ -101,7 +111,11 @@ export function deriveCases(events) {
     }
     if (!c) continue;
     c.events.push(e);
-    c.state = ACTIONS[e.type] ? ACTIONS[e.type].to : c.state;
+    if (ACTIONS[e.type] && ACTIONS[e.type].to) c.state = ACTIONS[e.type].to;
+    if (e.type === "CONFIRM" || e.type === "AUTO_CLOSE" || e.type === "UPHOLD") c.closedAt = e.at;
+    if ((e.type === "CONFIRM" || e.type === "RATE") && e.data && e.data.rating) {
+      c.rating = { stars: e.data.rating, comment: e.data.comment || "", at: e.at };
+    }
     c.updatedAt = e.at;
     if (e.type === "PROPOSE") { c.proposal = e.data; c.proposedAt = e.at; }
     if (e.type === "DISPUTE") { c.dispute = e.data; c.disputedAt = e.at; }
@@ -129,9 +143,20 @@ function bodyOf(e) {
   };
 }
 
+// Stable JSON: keys sorted at every level, so the fingerprint is the same
+// no matter how a database stores or returns the fields.
+export function canonicalJSON(v) {
+  if (Array.isArray(v)) return `[${v.map((x) => canonicalJSON(x === undefined ? null : x)).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJSON(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
 async function seal(draft, prev) {
   const body = bodyOf({ ...draft, seq: prev ? prev.seq + 1 : 1, prevHash: prev ? prev.hash : GENESIS });
-  return { ...body, hash: await sha256(JSON.stringify(body)) };
+  return { ...body, hash: await sha256(canonicalJSON(body)) };
 }
 
 /** Recomputes every hash and link. Any edited event breaks the chain from that point. */
@@ -139,7 +164,7 @@ export async function verifyLedger(events) {
   let prevHash = GENESIS;
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
-    const recomputed = await sha256(JSON.stringify(bodyOf(e)));
+    const recomputed = await sha256(canonicalJSON(bodyOf(e)));
     if (e.seq !== i + 1 || e.prevHash !== prevHash || recomputed !== e.hash) {
       return { ok: false, count: events.length, brokenAt: i + 1 };
     }
@@ -158,7 +183,7 @@ export async function buildSeed(now) {
     caseId, type, actorId: who.id, actorName: who.name, role: who.role, at, data,
   });
   const submit = (id, who, at, data) =>
-    ev(id, "SUBMIT", who, at, { assignedTo: P.damodar.id, category: "Waste collection", ...data });
+    ev(id, "SUBMIT", who, at, { assignedTo: P.damodar.id, category: "Garbage & sanitation", ...data });
   const proof = (note, checklist, photoLabel, capturedAt) => ({
     note, checklist, photo: null, photoLabel, capturedAt, metadataStripped: true,
   });
@@ -221,7 +246,7 @@ export async function buildSeed(now) {
     ev("1062", "PROPOSE", P.damodar, h(100), proof(
       "Lane covered on the evening round. Vehicle route updated to include this lane.",
       ["container", "area"], "Lane after pickup", h(100.2))),
-    ev("1062", "CONFIRM", P.sana, h(96), { note: "Picked up. Thank you." }),
+    ev("1062", "CONFIRM", P.sana, h(96), { note: "Picked up. Thank you.", rating: 4, comment: "Picked up the next evening. Would be 5 stars if it was the same day." }),
 
     submit("1055", P.vikram, h(200), {
       title: "Bin lid broken, waste exposed",
@@ -235,7 +260,64 @@ export async function buildSeed(now) {
     ev("1055", "AUTO_CLOSE", P.system, h(108), {
       reason: "No citizen response within 72 hours", windowEndedAt: h(108),
     }),
-  ].sort((a, b) => a.at - b.at);
+
+    submit("1036", P.riya, h(80), {
+      title: "Street not swept",
+      category: "Garbage & sanitation",
+      location: "Sector 14, Market Road",
+      description: "The market road hasn't been swept for a week. Plastic and paper are piling up along the shops.",
+      photoLabel: "Litter along market road",
+    }),
+    ev("1036", "PROPOSE", P.damodar, h(40), proof(
+      "Swept the full market road stretch and cleared the litter along the shop fronts. Added the road to the daily sweeping route.",
+      ["area", "transported"], "Market road swept", h(40.2))),
+    ev("1036", "CONFIRM", P.riya, h(30), { note: "Road is clean now.", rating: 5, comment: "Very quick. The road is spotless and now gets swept every morning." }),
+
+    submit("1048", P.farah, h(170), {
+      title: "Garbage dumped in open area",
+      category: "Garbage & sanitation",
+      location: "Sector 17, open plot near community park",
+      description: "People have been dumping household garbage on the empty plot for weeks. It smells and attracts stray dogs.",
+      photoLabel: "Garbage dumped on open plot",
+    }),
+    ev("1048", "PROPOSE", P.damodar, h(158), proof(
+      "Cleared about 2 tonnes of dumped waste with a JCB and tipper. Put up a No Dumping board with fine details.",
+      ["bulk", "area", "transported"], "Plot cleared, board installed", h(158.2))),
+    ev("1048", "CONFIRM", P.farah, h(150), { note: "Plot is clean now. Thank you for the board.", rating: 5, comment: "Plot is clean now and the No Dumping board really helps." }),
+
+    submit("1041", P.anil, h(230), {
+      title: "Blocked or overflowing drain",
+      category: "Drains & water",
+      location: "Sector 15, Lane 6",
+      description: "The roadside drain is choked with plastic and the water overflows onto the lane every evening.",
+      photoLabel: "Choked roadside drain",
+    }),
+    ev("1041", "PROPOSE", P.damodar, h(214), proof(
+      "Desilted and cleared 40 metres of drain, removed plastic and silt, and fixed two loose grates.",
+      ["drain", "area", "transported"], "Drain cleared and flowing", h(214.3))),
+    ev("1041", "DISPUTE", P.anil, h(212), {
+      note: "Water is still standing at the far end of the lane.",
+      photo: null, photoLabel: "Water at far end",
+    }),
+    ev("1041", "RATE", P.anil, h(190), { rating: 3, comment: "Drain is fine now, but it needed a dispute to get a proper answer." }),
+    ev("1041", "UPHOLD", P.patel, h(205), {
+      outcome: "UPHELD",
+      ruling: "The officer's photos cover the full 40 m stretch and show the drain flowing. The resident's photo matches the state before the work finished. Resolution upheld and case closed.",
+      bulkTruckDispatched: false,
+    }),
+  ];
+
+  // attach drawn illustrations (synthetic demo data, not real photos)
+  const ART = {
+    SUBMIT:  { 1036: "litteredStreet", 1048: "openDump", 1041: "drainBlocked", 1084: "overflowPark", 1091: "busBags", 1077: "blockOverflow", 1069: "debrisFootpath", 1062: "gateBags", 1055: "brokenLid" },
+    PROPOSE: { 1036: "sweptStreet", 1048: "openClean", 1041: "drainClear", 1091: "busClean", 1077: "blockEmptyBin", 1069: "cornerBin", 1062: "laneClean", 1055: "newBin" },
+    DISPUTE: { 1041: "drainBlocked", 1077: "blockLooseWaste", 1069: "debrisStill" },
+  };
+  for (const d of drafts) {
+    const name = ART[d.type] && ART[d.type][d.caseId];
+    if (name) d.data = { ...d.data, photos: [{ src: scene(name), capturedAt: d.data.capturedAt || d.at, sample: true }] };
+  }
+  drafts.sort((a, b) => a.at - b.at);
 
   const out = [];
   for (const d of drafts) out.push(await seal(d, out[out.length - 1]));
@@ -243,7 +325,56 @@ export async function buildSeed(now) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. React hooks                                                      */
+/* 5. Online database (Supabase) helpers                               */
+/* ------------------------------------------------------------------ */
+export const toRow = (e) => ({
+  seq: e.seq, case_id: e.caseId, type: e.type, actor_id: e.actorId, actor_name: e.actorName,
+  role: e.role, at: e.at, data: e.data, prev_hash: e.prevHash, hash: e.hash,
+});
+export const fromRow = (r) => ({
+  seq: Number(r.seq), caseId: r.case_id, type: r.type, actorId: r.actor_id, actorName: r.actor_name,
+  role: r.role, at: Number(r.at), data: r.data || {}, prevHash: r.prev_hash, hash: r.hash,
+});
+
+// Gives up on a database call that takes too long (no internet, wrong address).
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("Timed out"), { code: "TIMEOUT" })), ms)),
+  ]);
+}
+
+function dbError(error) {
+  const e = new Error(error.message || "Database error");
+  e.code = error.code;
+  return e;
+}
+
+/** Loads the whole ledger in order. */
+export async function cloudLoad(sb) {
+  const { data, error } = await sb.from("events").select("*").order("seq", { ascending: true }).limit(10000);
+  if (error) throw dbError(error);
+  return data.map(fromRow);
+}
+
+/** Loads the ledger, creating the synthetic demo cases if it's empty. */
+export async function cloudSeedIfEmpty(sb) {
+  const list = await cloudLoad(sb);
+  if (list.length) return list;
+  const seed = await buildSeed(Date.now());
+  const { error } = await sb.from("events").insert(seed.map(toRow));
+  if (error && error.code !== "23505") throw dbError(error); // 23505: another device seeded first
+  return cloudLoad(sb);
+}
+
+/** Appends one sealed entry. Throws with code 23505 if another device added one first. */
+export async function cloudAppend(sb, sealed) {
+  const { error } = await sb.from("events").insert(toRow(sealed));
+  if (error) throw dbError(error);
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. React hooks                                                      */
 /* ------------------------------------------------------------------ */
 
 /** Live clock: re-renders every 15s so countdowns stay current. */
@@ -260,6 +391,7 @@ export function useNow() {
 export function useCivicLedger(now) {
   const [events, setEvents] = useState(null);
   const [storageWarning, setStorageWarning] = useState("");
+  const [cloudWarning, setCloudWarning] = useState("");
   const eventsRef = useRef(null);
   const queueRef = useRef(Promise.resolve());
 
@@ -282,12 +414,14 @@ export function useCivicLedger(now) {
     return p;
   }, []);
 
+  const cloudRef = useRef(null); // Supabase client when the online database is in use
+
   const loadSeed = useCallback(
     () => enqueue(async () => commit(await buildSeed(Date.now()))),
     [enqueue, commit]
   );
 
-  useEffect(() => {
+  const loadLocal = useCallback(() => {
     let stored = null;
     try { stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); } catch { stored = null; }
     if (!(Array.isArray(stored) && stored.length) && memoryLedger && memoryLedger.length) stored = memoryLedger;
@@ -300,21 +434,80 @@ export function useCivicLedger(now) {
     }
   }, [loadSeed]);
 
+  useEffect(() => {
+    if (!CLOUD) { loadLocal(); return undefined; }
+
+    let cancelled = false;
+    let channel = null;
+    let sbRef = null;
+    (async () => {
+      try {
+        const sb = await getSupabase();
+        sbRef = sb;
+        const list = await enqueue(() => withTimeout(cloudSeedIfEmpty(sb), 8000));
+        if (cancelled) return;
+        cloudRef.current = sb;
+        commit(list);
+        // live updates: entries added on any other device appear here straight away
+        channel = sb
+          .channel("civicaccord-events")
+          .on("postgres_changes", { event: "INSERT", schema: "public", table: "events" }, (payload) => {
+            const e = fromRow(payload.new);
+            const cur = eventsRef.current || [];
+            const last = cur[cur.length - 1];
+            if (cur[e.seq - 1] && cur[e.seq - 1].hash === e.hash) return; // already have it
+            if (e.seq === (last ? last.seq : 0) + 1 && e.prevHash === (last ? last.hash : GENESIS)) {
+              commit([...cur, e]);
+            } else {
+              enqueue(async () => commit(await cloudLoad(sb))); // out of step (e.g. a reset): reload
+            }
+          })
+          .subscribe();
+      } catch {
+        if (cancelled) return;
+        cloudRef.current = null;
+        loadLocal();
+        setCloudWarning("Couldn't reach the online database, so this device is using its own copy for now. Reload the page to try again.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (channel && sbRef) sbRef.removeChannel(channel);
+    };
+  }, [enqueue, commit, loadLocal]);
+
   const cases = useMemo(() => (events ? deriveCases(events) : []), [events]);
 
   const dispatch = useCallback(
     (caseId, action, actor, data = {}) =>
       enqueue(async () => {
-        const list = eventsRef.current || [];
-        const current = deriveCases(list).find((c) => c.id === caseId) || null;
-        const err = checkTransition(current, action, actor.role, actor.id);
-        if (err) throw new Error(err);
-        const sealed = await seal(
-          { caseId, type: action, actorId: actor.id, actorName: actor.name, role: actor.role, at: now, data },
-          list[list.length - 1]
-        );
-        commit([...list, sealed]);
-        return sealed;
+        for (let attempt = 0; ; attempt++) {
+          const list = eventsRef.current || [];
+          const current = deriveCases(list).find((c) => c.id === caseId) || null;
+          const err = checkTransition(current, action, actor.role, actor.id);
+          if (err) throw new Error(err);
+          const sealed = await seal(
+            { caseId, type: action, actorId: actor.id, actorName: actor.name, role: actor.role, at: now, data },
+            list[list.length - 1]
+          );
+          const sb = cloudRef.current;
+          if (sb) {
+            try {
+              await withTimeout(cloudAppend(sb, sealed), 10000);
+            } catch (e) {
+              if (e.code === "23505" && attempt < 2) {
+                commit(await withTimeout(cloudLoad(sb), 10000)); // someone else saved first: refresh and re-check
+                continue;
+              }
+              throw new Error("Couldn't save to the online database. Check your internet connection and try again.");
+            }
+          }
+          const latest = eventsRef.current || [];
+          if (!(latest[sealed.seq - 1] && latest[sealed.seq - 1].hash === sealed.hash)) {
+            commit([...list, sealed]);
+          }
+          return sealed;
+        }
       }),
     [enqueue, commit, now]
   );
@@ -334,8 +527,19 @@ export function useCivicLedger(now) {
   const reset = useCallback(() => {
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     memoryLedger = null;
+    const sb = cloudRef.current;
+    if (sb) {
+      return enqueue(async () => {
+        const { error } = await sb.rpc("reset_demo");
+        if (error) throw dbError(error);
+        commit(await cloudSeedIfEmpty(sb));
+      });
+    }
     return loadSeed();
-  }, [loadSeed]);
+  }, [enqueue, commit, loadSeed]);
 
-  return { ready: events !== null, events: events || [], cases, dispatch, reset, storageWarning };
+  return {
+    ready: events !== null, events: events || [], cases, dispatch, reset,
+    storageWarning: cloudWarning || storageWarning, online: CLOUD && !cloudWarning,
+  };
 }

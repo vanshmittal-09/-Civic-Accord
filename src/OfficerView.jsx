@@ -8,8 +8,9 @@ import {
 } from "./civicLedger";
 import {
   STATUS_META, EVENT_LABEL, CHECKS, CHECK_LABEL, dur, ago, stamp, queueMeta, stripAndCompress,
-  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied,
+  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, RatingCard, averageRating, StarRating, CaseTimer,
 } from "./shared";
+import { readPhotoSignals } from "./imageCheck";
 
 const ME = PEOPLE.damodar;
 const MIN_NOTE = 20;
@@ -43,8 +44,10 @@ function ProposalForm({ c, now, onSubmit, isRework }) {
         continue;
       }
       try {
+        const signals = await readPhotoSignals(f); // read before the metadata is stripped
         const src = await stripAndCompress(f);
         added.push({
+          signals,
           id: `${f.name}-${f.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
           src,
           capturedAt: f.lastModified,
@@ -66,7 +69,7 @@ function ProposalForm({ c, now, onSubmit, isRework }) {
     await onSubmit({
       note: note.trim(),
       checklist,
-      photos: photos.map(({ src, capturedAt }) => ({ src, capturedAt })),
+      photos: photos.map(({ src, capturedAt, signals }) => ({ src, capturedAt, signals })),
       photoLabel: "Officer completion photos",
       capturedAt: Math.min(...photos.map((ph) => ph.capturedAt)),
       metadataStripped: true,
@@ -260,6 +263,9 @@ function ClosedPanel({ c }) {
         <h3 className="text-lg font-semibold text-emerald-900">{text[0]}</h3>
         {text[1] && <p className="mt-1 text-sm text-emerald-900/80">{text[1]}</p>}
       </section>
+      {c.rating ? <RatingCard rating={c.rating} who="Resident's rating" /> : (
+        <p className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500 ring-1 ring-slate-200">The resident hasn't rated this resolution yet.</p>
+      )}
       <ProofCard title="Your submitted proof" proof={c.proposal} at={c.proposedAt} />
     </>
   );
@@ -296,6 +302,7 @@ function CaseDetail({ c, now, onPropose }) {
             <p className="font-mono text-xs text-slate-500">CASE #{c.id} · {c.category}</p>
             <h2 className="mt-1 text-xl font-semibold text-slate-900">{c.title}</h2>
             <p className="mt-0.5 text-sm text-slate-600">{c.location}</p>
+            <div className="mt-2"><CaseTimer c={c} /></div>
           </div>
           <StatusBadge state={c.state} />
         </div>
@@ -379,8 +386,17 @@ function OfficerScreen({ session, onSignOut }) {
     setIntegrity(await verifyLedger(events));
   }
 
+  const [confirmReset, setConfirmReset] = useState(false);
+  useEffect(() => {
+    if (!confirmReset) return;
+    const t = setTimeout(() => setConfirmReset(false), 4000);
+    return () => clearTimeout(t);
+  }, [confirmReset]);
+
   async function handleReset() {
-    if (!window.confirm("Reset the demo? This clears all cases and reloads the synthetic data.")) return;
+    // two-step confirm (browser confirm() dialogs are blocked in shared previews)
+    if (!confirmReset) { setConfirmReset(true); return; }
+    setConfirmReset(false);
     await reset();
     setFilter("action");
     setSelectedId(null);
@@ -393,12 +409,23 @@ function OfficerScreen({ session, onSignOut }) {
       {/* top bar */}
       <header className="sticky top-0 z-20 bg-[#0e4f4f] text-white shadow">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3">
-          <div className="mr-auto">
-            <p className="text-lg font-bold leading-tight">Civic <span className="text-emerald-300">Accord</span></p>
-            <p className="text-xs text-teal-100/80">Field Officer workspace · Sanitation, Sectors 14–17</p>
+          <div className="mr-auto flex items-center gap-3">
+            <Logo />
+            <div>
+              <p className="text-lg font-bold leading-tight">Civic <span className="text-emerald-300">Accord</span></p>
+              <p className="text-xs text-teal-100/80">Field Officer workspace · Municipal Corporation, Sectors 14–17</p>
+            </div>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <span className="rounded-full bg-white/15 px-3 py-1">Signed in as <b>{session.name}</b></span>
+            <ProfileMenu
+              session={session} onSignOut={onSignOut} textClass="text-[#0e4f4f]" accent="bg-[#0e4f4f]"
+              stats={[
+                { label: "Assigned", value: groups.all.length },
+                { label: "Open", value: groups.action.length + groups.waiting.length + groups.review.length },
+                { label: "Completed", value: groups.closed.length },
+                { label: "Avg rating", value: (() => { const a = averageRating(groups.all); return a ? `${a.avg.toFixed(1)}★` : "–"; })() },
+              ]}
+            />
             <button type="button" onClick={onSignOut} className="rounded-full bg-white px-3 py-1 font-semibold text-[#0e4f4f] hover:bg-slate-100">
               Sign out
             </button>
@@ -462,9 +489,11 @@ function OfficerScreen({ session, onSignOut }) {
                       <p className="mt-1 font-semibold text-slate-900">{c.title}</p>
                       <p className="text-sm text-slate-600">{c.location}</p>
                       <p className="mt-2 text-xs font-medium text-slate-500">{queueMeta(c, now)}</p>
+                      <div className="mt-2"><CaseTimer c={c} /></div>
                     </button>
                   );
                 })}
+                <MyRatingPanel cases={groups.all} onOpen={(id) => { setFilter("closed"); setSelectedId(id); }} />
               </aside>
 
               {/* detail */}
@@ -490,13 +519,15 @@ function OfficerScreen({ session, onSignOut }) {
               <button type="button" onClick={handleVerify} className="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-900 hover:bg-slate-100">
                 {integrity && integrity.checking ? "Verifying…" : "Verify integrity"}
               </button>
-              <button type="button" onClick={handleReset} className="rounded-lg px-3 py-1.5 text-slate-300 ring-1 ring-slate-600 hover:bg-slate-800">
-                Reset demo
+              <button type="button" onClick={handleReset} className={`rounded-lg px-3 py-1.5 ring-1 ${confirmReset ? "bg-rose-600 text-white ring-rose-600 hover:bg-rose-700" : "text-slate-300 ring-slate-600 hover:bg-slate-800"}`}>
+                {confirmReset ? "Click again to reset all data" : "Reset demo"}
               </button>
             </footer>
           </>
         )}
       </main>
+
+      <SiteFooter />
 
       {toast && (
         <div role="status" className={`fixed bottom-4 left-1/2 z-30 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 rounded-xl px-4 py-3 text-sm font-medium shadow-lg ${toast.ok ? "bg-emerald-700 text-white" : "bg-rose-700 text-white"}`}>
@@ -504,5 +535,67 @@ function OfficerScreen({ session, onSignOut }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ---------------- officer's own resident rating (compact, under the case list) ---------------- */
+function MyRatingPanel({ cases, onOpen }) {
+  const [showAll, setShowAll] = useState(false);
+  const rated = cases.filter((c) => c.rating).sort((a, b) => b.rating.at - a.rating.at);
+  const avg = averageRating(cases);
+  const dist = [5, 4, 3, 2, 1].map((n) => ({ n, count: rated.filter((c) => c.rating.stars === n).length }));
+  const max = Math.max(1, ...dist.map((d) => d.count));
+  const reviews = showAll ? rated : rated.slice(0, 1);
+
+  return (
+    <section aria-labelledby="my-rating-title" className="!mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-amber-200">
+      <h2 id="my-rating-title" className="text-xs font-semibold uppercase tracking-wide text-slate-500">Your resident rating</h2>
+      {avg ? (
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="text-2xl font-bold tabular-nums text-amber-600">{avg.avg.toFixed(1)}</span>
+          <div>
+            <StarRating value={Math.round(avg.avg * 10) / 10} size="h-3.5 w-3.5" showNumber={false} />
+            <p className="text-[11px] text-slate-500">{avg.count} rating{avg.count > 1 ? "s" : ""}</p>
+          </div>
+        </div>
+      ) : (
+        <p className="mt-1.5 text-xs text-slate-500">No ratings yet. Residents rate your work when they confirm a fix.</p>
+      )}
+
+      {avg && (
+        <div aria-label="Rating breakdown" className="mt-2 space-y-1">
+          {dist.map((d) => (
+            <div key={d.n} className="flex items-center gap-1.5 text-[11px]">
+              <span className="w-6 shrink-0 tabular-nums text-slate-500">{d.n}★</span>
+              <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+                <span className="block h-full rounded-full bg-amber-400" style={{ width: `${(d.count / max) * 100}%` }} />
+              </span>
+              <span className="w-3 shrink-0 text-right tabular-nums text-slate-500">{d.count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {reviews.length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {reviews.map((c) => (
+            <li key={c.id}>
+              <button type="button" onClick={() => onOpen(c.id)} className="w-full rounded-lg bg-amber-50/70 px-2.5 py-1.5 text-left ring-1 ring-amber-100 hover:ring-amber-300">
+                <div className="flex items-center gap-1.5">
+                  <StarRating value={c.rating.stars} size="h-3 w-3" showNumber={false} />
+                  <span className="truncate text-[11px] text-slate-500">#{c.id} · {c.title}</span>
+                </div>
+                {c.rating.comment && <p className="mt-0.5 line-clamp-2 text-xs italic text-slate-700">“{c.rating.comment}”</p>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rated.length > 1 && (
+        <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-2 text-xs font-semibold text-teal-700 hover:underline">
+          {showAll ? "Show less" : `See all ${rated.length} reviews`}
+        </button>
+      )}
+    </section>
   );
 }

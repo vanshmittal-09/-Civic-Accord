@@ -5,8 +5,9 @@ import { useState, useMemo, useEffect } from "react";
 import { STATES, CLOSED_STATES, AUTO_CLOSE_MS, PEOPLE, useCivicLedger, useNow, verifyLedger } from "./civicLedger";
 import {
   dur, ago, stamp, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
-  TopBar, AccessDenied, LedgerBar,
+  TopBar, AccessDenied, SiteFooter, LedgerBar, StarRating, RatingCard, averageRating, CaseTimer,
 } from "./shared";
+import { assessPhoto, detectAiOnline, ONLINE_AI_CHECK } from "./imageCheck";
 
 const MIN_RULING = 30;
 
@@ -27,7 +28,7 @@ export default function SupervisorView({ session, onSignOut }) {
 function SupervisorScreen({ session, onSignOut }) {
   const me = PEOPLE[session.personId];
   const now = useNow();
-  const { ready, events, cases, dispatch } = useCivicLedger(now);
+  const { ready, events, cases, dispatch, storageWarning } = useCivicLedger(now);
   const [tab, setTab] = useState("disputes");
   const [selectedId, setSelectedId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -53,7 +54,7 @@ function SupervisorScreen({ session, onSignOut }) {
   // officer accountability, computed from the ledger
   const officerStats = useMemo(() => {
     const byOfficer = {};
-    const row = (id, name) => (byOfficer[id] ||= { id, name, proposals: 0, disputed: 0, overturned: 0, upheld: 0, confirmed: 0, uncontested: 0 });
+    const row = (id, name) => (byOfficer[id] ||= { id, name, proposals: 0, disputed: 0, overturned: 0, upheld: 0, confirmed: 0, uncontested: 0, ratingSum: 0, ratingCount: 0 });
     const officerOf = {};
     for (const e of events) {
       if (e.type === "SUBMIT") officerOf[e.caseId] = e.data.assignedTo;
@@ -65,6 +66,7 @@ function SupervisorScreen({ session, onSignOut }) {
       if (e.type === "ORDER_REWORK") r.overturned++;
       if (e.type === "UPHOLD") r.upheld++;
       if (e.type === "CONFIRM") r.confirmed++;
+      if ((e.type === "CONFIRM" || e.type === "RATE") && e.data && e.data.rating) { r.ratingSum += e.data.rating; r.ratingCount++; }
       if (e.type === "AUTO_CLOSE") r.uncontested++;
     }
     return Object.values(byOfficer);
@@ -85,7 +87,17 @@ function SupervisorScreen({ session, onSignOut }) {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <TopBar subtitle="Supervisor console · Reasoned review of disputed closures" bg="bg-[#1e3a5f]" session={session} onSignOut={onSignOut} />
+      <TopBar subtitle="Supervisor console · Reasoned review of disputed closures" bg="bg-[#1e3a5f]" session={session} onSignOut={onSignOut} avatarText="text-[#1e3a5f]"
+        stats={[
+          { label: "Disputes waiting", value: groups.disputes.length },
+          { label: "Rulings made", value: events.filter((e) => e.actorId === me.id && (e.type === "UPHOLD" || e.type === "ORDER_REWORK")).length },
+          { label: "Cases closed", value: groups.closed.length },
+        ]}
+      />
+
+      {storageWarning && (
+        <p role="status" className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900">{storageWarning}</p>
+      )}
 
       <main className="mx-auto max-w-7xl px-4 py-6">
         {!ready ? (
@@ -135,8 +147,9 @@ function SupervisorScreen({ session, onSignOut }) {
                       <p className="mt-1 font-semibold">{c.title}</p>
                       <p className="text-sm text-slate-600">{c.location}</p>
                       <p className="mt-2 text-xs text-slate-500">
-                        {c.state === STATES.CONTESTED ? `Disputed ${ago(c.disputedAt, now)} by ${c.citizenName}` : `Updated ${ago(c.updatedAt, now)}`}
+                        {c.state === STATES.CONTESTED ? `Disputed by ${c.citizenName} on ${stamp(c.disputedAt)}` : `Updated on ${stamp(c.updatedAt)}`}
                       </p>
+                      <div className="mt-2"><CaseTimer c={c} /></div>
                     </button>
                   );
                 })}
@@ -157,6 +170,8 @@ function SupervisorScreen({ session, onSignOut }) {
           </>
         )}
       </main>
+
+      <SiteFooter />
 
       {toast && (
         <div role="status" className={`fixed bottom-4 left-1/2 z-30 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg ${toast.ok ? "bg-emerald-700" : "bg-rose-700"}`}>
@@ -186,6 +201,12 @@ function OfficerTable({ rows }) {
                 <Stat label="Uncontested" value={r.uncontested} />
                 <Stat label="Upheld" value={r.upheld} />
               </dl>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-1 rounded-lg bg-amber-50 px-2 py-1.5 ring-1 ring-amber-200">
+                <span className="text-[11px] font-medium text-amber-900">Resident rating</span>
+                {r.ratingCount
+                  ? <span className="flex items-center gap-1"><StarRating value={Math.round((r.ratingSum / r.ratingCount) * 10) / 10} size="h-3.5 w-3.5" /><span className="text-[10px] text-amber-900/70">({r.ratingCount})</span></span>
+                  : <span className="text-[11px] text-amber-900/60">No ratings yet</span>}
+              </div>
             </div>
           );
         })}
@@ -214,6 +235,7 @@ function CaseDetail({ c, now, onRule }) {
             <p className="font-mono text-xs text-slate-500">CASE #{c.id} · {c.category}</p>
             <h2 className="mt-1 text-xl font-semibold">{c.title}</h2>
             <p className="mt-0.5 text-sm text-slate-600">{c.location} · Resident {c.citizenName} · Officer Damodar</p>
+            <div className="mt-2"><CaseTimer c={c} /></div>
           </div>
           <StatusBadge state={c.state} />
         </div>
@@ -234,6 +256,7 @@ function CaseDetail({ c, now, onRule }) {
               <ProofCard title="3 · Resident's counter-proof" proof={c.dispute} at={c.disputedAt} tone="citizen" />
             </div>
           </section>
+          <PhotoCheck key={c.id} c={c} />
           <RulingForm c={c} onRule={onRule} />
         </>
       ) : (
@@ -333,6 +356,106 @@ function ReadOnlyPanel({ c, now }) {
         </Card>
         <ProofCard title="Officer's proof" proof={c.proposal} at={c.proposedAt} />
       </div>
+      {c.rating && <RatingCard rating={c.rating} who="Resident's rating" />}
     </>
+  );
+}
+
+/* ---------------- AI photo check (advisory) ---------------- */
+const LEVEL_STYLE = {
+  high:    { badge: "bg-rose-100 text-rose-800 ring-rose-200", dot: "bg-rose-500" },
+  medium:  { badge: "bg-amber-100 text-amber-900 ring-amber-200", dot: "bg-amber-500" },
+  low:     { badge: "bg-emerald-100 text-emerald-800 ring-emerald-200", dot: "bg-emerald-500" },
+  unknown: { badge: "bg-slate-100 text-slate-700 ring-slate-200", dot: "bg-slate-400" },
+  demo:    { badge: "bg-slate-100 text-slate-700 ring-slate-200", dot: "bg-slate-400" },
+};
+
+function PhotoCheck({ c }) {
+  const photos = [
+    ...((c.photos || []).map((p, i) => ({ p, label: `Complaint photo ${i + 1}`, who: "Resident" }))),
+    ...(((c.proposal && c.proposal.photos) || []).map((p, i) => ({ p, label: `Officer proof ${i + 1}`, who: "Officer" }))),
+    ...(((c.dispute && c.dispute.photos) || []).map((p, i) => ({ p, label: `Counter-proof ${i + 1}`, who: "Resident" }))),
+  ];
+  const [results, setResults] = useState(null);
+  const [online, setOnline] = useState({}); // index -> { loading, score, error }
+
+  function runLocal() {
+    setResults(photos.map(({ p }) => assessPhoto(p)));
+  }
+
+  async function runOnline(i) {
+    setOnline((o) => ({ ...o, [i]: { loading: true } }));
+    try {
+      const r = await detectAiOnline(photos[i].p.src);
+      setOnline((o) => ({ ...o, [i]: { score: r.aiGenerated } }));
+    } catch (err) {
+      setOnline((o) => ({ ...o, [i]: { error: err.message } }));
+    }
+  }
+
+  return (
+    <Card className="ring-2 ring-violet-200">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="max-w-xl">
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <svg viewBox="0 0 24 24" className="h-5 w-5 text-violet-600" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.6L18 9.4l-4.2 1.8L12 16l-1.8-4.8L6 9.4l4.2-1.8z" /><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" /></svg>
+            AI photo check
+          </h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Checks each photo for signs it's AI-generated or edited instead of taken on site. It's advice for your ruling. Detectors can be wrong, so never rule on this alone.
+          </p>
+        </div>
+        <button
+          type="button" onClick={runLocal} disabled={!photos.length}
+          className="rounded-xl bg-violet-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-800 disabled:bg-slate-300"
+        >
+          {results ? "Check again" : `Check ${photos.length} photo${photos.length === 1 ? "" : "s"}`}
+        </button>
+      </div>
+
+      {results && (
+        <ul className="mt-4 space-y-3">
+          {photos.map(({ p, label, who }, i) => {
+            const r = results[i];
+            const st = LEVEL_STYLE[r.level];
+            const o = online[i];
+            return (
+              <li key={i} className="flex gap-3 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+                <img src={p.src} alt={label} className="h-16 w-20 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold">{label}</span>
+                    <span className="text-xs text-slate-500">from {who}</span>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${st.badge}`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />{r.label}
+                    </span>
+                  </div>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-slate-600">
+                    {r.reasons.map((t, k) => <li key={k}>{t}</li>)}
+                  </ul>
+                  {r.level !== "demo" && (
+                    <div className="mt-2 text-xs">
+                      {!o && (
+                        <button type="button" onClick={() => runOnline(i)} className="font-semibold text-violet-700 hover:underline">
+                          {ONLINE_AI_CHECK ? "Run AI detection model" : "AI detection model (needs online setup)"}
+                        </button>
+                      )}
+                      {o && o.loading && <span className="text-slate-500">Asking the AI detection model…</span>}
+                      {o && typeof o.score === "number" && (
+                        <span className={`inline-flex items-center gap-2 font-semibold ${o.score >= 0.7 ? "text-rose-700" : o.score >= 0.3 ? "text-amber-800" : "text-emerald-700"}`}>
+                          AI detection model: {Math.round(o.score * 100)}% likely AI-generated
+                          <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-slate-200"><span className="block h-full bg-current" style={{ width: `${Math.round(o.score * 100)}%` }} /></span>
+                        </span>
+                      )}
+                      {o && o.error && <span className="text-slate-500">{o.error}</span>}
+                    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }

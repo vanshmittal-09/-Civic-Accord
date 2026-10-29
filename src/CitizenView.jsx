@@ -4,19 +4,46 @@
 import { useState, useMemo, useEffect } from "react";
 import { STATES, CLOSED_STATES, AUTO_CLOSE_MS, PEOPLE, useCivicLedger, useNow } from "./civicLedger";
 import {
-  dur, ago, stamp, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
-  PhotoPicker, TopBar, AccessDenied,
+  dur, ago, stamp, EvidencePhoto, StarRating, StarPicker, RatingCard, RATING_WORDS, CaseTimer, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
+  PhotoPicker, TopBar, AccessDenied, SiteFooter,
 } from "./shared";
 
-const CATEGORIES = [
-  "Missed garbage collection",
-  "Overflowing bin",
-  "Illegal dumping",
-  "Construction debris",
-  "Broken or missing bin",
-  "Dead animal",
-  "Other sanitation issue",
+// Issue types residents can choose from, grouped by department
+const ISSUE_GROUPS = [
+  { group: "Garbage & sanitation", items: [
+    "Missed garbage collection",
+    "Overflowing bin",
+    "Garbage dumped in open area",
+    "Garbage burning",
+    "Bulk waste / old furniture pickup",
+    "Construction debris",
+    "Broken or missing bin",
+    "Dead animal",
+    "Street not swept",
+    "Public toilet unclean",
+  ] },
+  { group: "Drains & water", items: [
+    "Blocked or overflowing drain",
+    "Open manhole",
+    "Waterlogging after rain",
+    "Sewage overflow",
+    "Water pipeline leakage",
+  ] },
+  { group: "Roads & footpaths", items: [
+    "Pothole",
+    "Broken footpath",
+    "Encroachment on footpath",
+    "Fallen tree or branches",
+  ] },
+  { group: "Streetlights & public spaces", items: [
+    "Streetlight not working",
+    "Park not maintained",
+    "Stray animal menace",
+    "Mosquito breeding / fogging needed",
+  ] },
+  { group: "Other", items: ["Other civic issue"] },
 ];
+const CATEGORY_OF = Object.fromEntries(ISSUE_GROUPS.flatMap((g) => g.items.map((i) => [i, g.group])));
 
 // plain-language status for residents
 const RESIDENT_LABEL = {
@@ -37,9 +64,13 @@ export default function CitizenView({ session, onSignOut }) {
 }
 
 function CitizenScreen({ session, onSignOut }) {
-  const me = PEOPLE[session.personId];
+  // residents can be the demo account (Riya) or anyone who signed up
+  const me = useMemo(
+    () => ({ id: session.personId, name: session.personName || (PEOPLE[session.personId] || {}).name || "Resident", role: "CITIZEN" }),
+    [session.personId, session.personName]
+  );
   const now = useNow();
-  const { ready, cases, dispatch } = useCivicLedger(now);
+  const { ready, cases, dispatch, storageWarning } = useCivicLedger(now);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("view"); // "view" | "report"
   const [toast, setToast] = useState(null);
@@ -79,10 +110,10 @@ function CitizenScreen({ session, onSignOut }) {
       "SUBMIT",
       {
         title: form.category,
-        category: "Waste collection",
+        category: CATEGORY_OF[form.category] || "Other",
         location: form.location,
         description: form.description,
-        photos: form.photos.map(({ src, capturedAt }) => ({ src, capturedAt })),
+        photos: form.photos.map(({ src, capturedAt, signals }) => ({ src, capturedAt, signals })),
         photoLabel: "Resident photo",
         assignedTo: PEOPLE.damodar.id,
       },
@@ -93,7 +124,17 @@ function CitizenScreen({ session, onSignOut }) {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <TopBar subtitle="Resident portal · Report and verify civic work" bg="bg-[#3b2a7a]" session={session} onSignOut={onSignOut} />
+      <TopBar subtitle="Resident portal · Report and verify civic work" bg="bg-[#3b2a7a]" session={session} onSignOut={onSignOut} avatarText="text-[#3b2a7a]"
+        stats={[
+          { label: "Complaints", value: mine.length },
+          { label: "To verify", value: needsAction.length },
+          { label: "Resolved", value: mine.filter((c) => CLOSED_STATES.includes(c.state)).length },
+        ]}
+      />
+
+      {storageWarning && (
+        <p role="status" className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900">{storageWarning}</p>
+      )}
 
       <main className="mx-auto max-w-6xl px-4 py-6">
         {!ready ? (
@@ -114,14 +155,15 @@ function CitizenScreen({ session, onSignOut }) {
               </button>
             )}
 
-            <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+            <div className={mode === "report" ? "mx-auto max-w-3xl" : "grid gap-6 lg:grid-cols-[320px_1fr]"}>
+              {mode !== "report" && (
               <aside className="space-y-3" aria-label="My complaints">
                 <button
                   type="button"
                   onClick={() => setMode("report")}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#3b2a7a] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#2e2061]"
                 >
-                  + Report a problem
+                  + Report an issue
                 </button>
                 <h2 className="px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-500">My complaints ({mine.length})</h2>
                 {mine.length === 0 && (
@@ -142,25 +184,36 @@ function CitizenScreen({ session, onSignOut }) {
                       </div>
                       <p className="mt-1 font-semibold">{c.title}</p>
                       <p className="text-sm text-slate-600">{c.location}</p>
-                      <p className="mt-2 text-xs text-slate-500">Reported {ago(c.submittedAt, now)}</p>
+                      <p className="mt-2 text-xs text-slate-500">Reported on {stamp(c.submittedAt)}</p>
+                      <div className="mt-2"><CaseTimer c={c} /></div>
                     </button>
                   );
                 })}
               </aside>
+              )}
 
               <div>
                 {mode === "report" ? (
-                  <ReportForm onCancel={() => setMode("view")} onSubmit={submitReport} />
+                  <>
+                    <button type="button" onClick={() => setMode("view")} className="mb-3 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[#3b2a7a] hover:bg-violet-50">
+                      ← Back to my complaints
+                    </button>
+                    <ReportForm onCancel={() => setMode("view")} onSubmit={submitReport} />
+                  </>
                 ) : selected ? (
                   <CaseDetail key={selected.id} c={selected} now={now} act={act} />
                 ) : (
-                  <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Report a problem to get started.</p>
+                  <p className="rounded-2xl bg-white p-10 text-center text-slate-500 ring-1 ring-slate-200">Report an issue to get started.</p>
                 )}
               </div>
             </div>
+
+            {mode === "view" && <ResolvedShowcase cases={cases} />}
           </>
         )}
       </main>
+
+      <SiteFooter />
 
       {toast && (
         <div role="status" className={`fixed bottom-4 left-1/2 z-30 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg ${toast.ok ? "bg-emerald-700" : "bg-rose-700"}`}>
@@ -173,7 +226,7 @@ function CitizenScreen({ session, onSignOut }) {
 
 /* ---------------- report a problem ---------------- */
 function ReportForm({ onSubmit, onCancel }) {
-  const [category, setCategory] = useState(CATEGORIES[0]);
+  const [category, setCategory] = useState(ISSUE_GROUPS[0].items[0]);
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
   const [photos, setPhotos] = useState([]);
@@ -193,13 +246,17 @@ function ReportForm({ onSubmit, onCancel }) {
     <Card>
       <form onSubmit={(e) => e.preventDefault()} className="space-y-5">
         <div>
-          <h2 className="text-xl font-semibold">Report a problem</h2>
+          <h2 className="text-xl font-semibold">Report an issue</h2>
           <p className="mt-1 text-sm text-slate-600">Your complaint goes to the field officer. You'll be asked to verify the work before it can be closed.</p>
         </div>
         <div>
-          <label htmlFor="cat" className="mb-1.5 block text-sm font-medium">What's the problem?</label>
+          <label htmlFor="cat" className="mb-1.5 block text-sm font-medium">What's the issue?</label>
           <select id="cat" value={category} onChange={(e) => setCategory(e.target.value)} className={field}>
-            {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+            {ISSUE_GROUPS.map((g) => (
+              <optgroup key={g.group} label={g.group}>
+                {g.items.map((c) => <option key={c}>{c}</option>)}
+              </optgroup>
+            ))}
           </select>
         </div>
         <div>
@@ -213,7 +270,7 @@ function ReportForm({ onSubmit, onCancel }) {
         </div>
         <div>
           <p className="mb-1.5 text-sm font-medium">Photos <span className="font-normal text-slate-500">(at least 1, up to 4)</span></p>
-          <PhotoPicker photos={photos} onChange={setPhotos} prompt="Take a photo of the problem" tone="violet" />
+          <PhotoPicker photos={photos} onChange={setPhotos} prompt="Take a photo of the issue" tone="violet" />
         </div>
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <button type="button" onClick={submit} disabled={!valid || busy} className="flex-1 rounded-xl bg-[#3b2a7a] px-4 py-3 text-sm font-semibold text-white hover:bg-[#2e2061] disabled:cursor-not-allowed disabled:bg-slate-300">
@@ -229,7 +286,7 @@ function ReportForm({ onSubmit, onCancel }) {
 /* ---------------- case detail ---------------- */
 function CaseDetail({ c, now, act }) {
   const [disputing, setDisputing] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState(false); // shows the rate-and-confirm form
 
   let panel = null;
   if (c.state === STATES.SUBMITTED) {
@@ -256,13 +313,19 @@ function CaseDetail({ c, now, act }) {
           </div>
         </section>
         <ProofCard title="Officer's proof" proof={c.proposal} at={c.proposedAt} />
-        {!disputing ? (
+        {confirming ? (
+          <RateForm
+            title="Rate the work and close your complaint"
+            submitLabel="Confirm closure"
+            onCancel={() => setConfirming(false)}
+            onSubmit={(r) => act(c.id, "CONFIRM", { note: "Confirmed by resident", rating: r.stars, comment: r.comment }, `Thank you. Complaint #${c.id} is closed.`)}
+          />
+        ) : !disputing ? (
           <div className="grid gap-3 sm:grid-cols-2">
             <button
               type="button"
-              disabled={confirming}
-              onClick={async () => { setConfirming(true); await act(c.id, "CONFIRM", { note: "Confirmed by resident" }, `Thank you. Complaint #${c.id} is closed.`); setConfirming(false); }}
-              className="rounded-xl bg-emerald-700 px-4 py-3.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 disabled:bg-slate-300"
+              onClick={() => setConfirming(true)}
+              className="rounded-xl bg-emerald-700 px-4 py-3.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800"
             >
               ✓ Yes, it's fixed: confirm closure
             </button>
@@ -311,6 +374,15 @@ function CaseDetail({ c, now, act }) {
           <h3 className="text-lg font-semibold text-emerald-900">{RESIDENT_LABEL[c.state]}</h3>
           <p className="mt-1 text-sm text-emerald-900/80">{text}</p>
         </section>
+        {c.rating ? (
+          <RatingCard rating={c.rating} who="Your rating" />
+        ) : (
+          <RateForm
+            title="How was this resolved?"
+            submitLabel="Submit rating"
+            onSubmit={(r) => act(c.id, "RATE", { rating: r.stars, comment: r.comment }, "Thanks for rating this resolution.")}
+          />
+        )}
         <ProofCard title="Officer's proof" proof={c.proposal} at={c.proposedAt} />
       </>
     );
@@ -324,6 +396,7 @@ function CaseDetail({ c, now, act }) {
             <p className="font-mono text-xs text-slate-500">COMPLAINT #{c.id}</p>
             <h2 className="mt-1 text-xl font-semibold">{c.title}</h2>
             <p className="mt-0.5 text-sm text-slate-600">{c.location}</p>
+            <div className="mt-2"><CaseTimer c={c} /></div>
           </div>
           <StatusBadge state={c.state} label={RESIDENT_LABEL[c.state]} />
         </div>
@@ -353,7 +426,7 @@ function DisputeForm({ onSubmit, onCancel }) {
     setBusy(true);
     await onSubmit({
       note: note.trim(),
-      photos: photos.map(({ src, capturedAt }) => ({ src, capturedAt })),
+      photos: photos.map(({ src, capturedAt, signals }) => ({ src, capturedAt, signals })),
       photoLabel: "Resident counter-proof",
       metadataStripped: true,
     });
@@ -387,6 +460,110 @@ function DisputeForm({ onSubmit, onCancel }) {
           <button type="button" onClick={onCancel} className="rounded-xl px-4 py-3 text-sm font-medium text-slate-600 ring-1 ring-slate-300 hover:bg-slate-50">Back</button>
         </div>
       </form>
+    </Card>
+  );
+}
+
+/* ---------------- recently resolved in the community ---------------- */
+const CLOSURE_LABEL = {
+  [STATES.CONFIRMED]: { text: "Confirmed by resident", cls: "bg-emerald-100 text-emerald-800" },
+  [STATES.UNCONTESTED]: { text: "Closed after 72h, no dispute", cls: "bg-slate-100 text-slate-700" },
+  [STATES.REVIEWER_CLOSED]: { text: "Closed by supervisor ruling", cls: "bg-sky-100 text-sky-800" },
+};
+
+function ResolvedShowcase({ cases }) {
+  const resolved = cases
+    .filter((c) => CLOSED_STATES.includes(c.state) && c.proposal)
+    .sort((a, b) => (b.closedAt || b.updatedAt) - (a.closedAt || a.updatedAt))
+    .slice(0, 4);
+  if (!resolved.length) return null;
+
+  return (
+    <section aria-labelledby="resolved-title" className="mt-10">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 id="resolved-title" className="text-lg font-semibold">Recently resolved in your area</h2>
+          <p className="text-sm text-slate-500">Before and after photos of recent closures. Every one was verified, not just marked done.</p>
+          {resolved.some((c) => c.photos && c.photos[0] && c.photos[0].sample) && <p className="mt-0.5 text-xs text-slate-400">Demo data: photos are sample illustrations.</p>}
+        </div>
+      </div>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {resolved.map((c) => {
+          const before = c.photos && c.photos[0];
+          const after = c.proposal.photos && c.proposal.photos[0];
+          const label = CLOSURE_LABEL[c.state];
+          return (
+            <article key={c.id} className="flex flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+              <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1">
+                <div className="relative">
+                  {before ? <EvidencePhoto photo={before} alt={`Before: ${c.title}`} hideSampleTag /> : <div className="aspect-[4/3] rounded-xl bg-slate-200" />}
+                  <span className="absolute left-2 top-2 rounded-md bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">Before</span>
+                </div>
+                <div className="relative">
+                  {after ? <EvidencePhoto photo={after} alt={`After: ${c.title}`} hideSampleTag /> : <div className="aspect-[4/3] rounded-xl bg-slate-200" />}
+                  <span className="absolute left-2 top-2 rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">After</span>
+                </div>
+              </div>
+              <div className="flex flex-1 flex-col p-4">
+                <p className="font-mono text-[11px] text-slate-500">#{c.id} · {c.category}</p>
+                <h3 className="mt-0.5 font-semibold leading-snug">{c.title}</h3>
+                <p className="text-sm text-slate-600">{c.location}</p>
+                <p className="mt-2 line-clamp-3 text-sm text-slate-700">{c.proposal.note}</p>
+                <div className="mt-auto space-y-2 pt-3">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800">
+                      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>Resolved in {dur((c.closedAt || c.updatedAt) - c.submittedAt)}
+                    </span>
+                    {label && <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${label.cls}`}>{label.text}</span>}
+                  </div>
+                  <dl className="grid grid-cols-[70px_1fr] gap-x-2 text-xs text-slate-500">
+                    <dt>Reported</dt><dd className="text-slate-700">{stamp(c.submittedAt)}</dd>
+                    <dt>Resolved</dt><dd className="text-slate-700">{stamp(c.closedAt || c.updatedAt)}</dd>
+                    <dt>Rating</dt><dd>{c.rating ? <StarRating value={c.rating.stars} size="h-3.5 w-3.5" /> : <span className="text-slate-400">Not rated yet</span>}</dd>
+                  </dl>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- rating form ---------------- */
+function RateForm({ title, submitLabel, onSubmit, onCancel }) {
+  const [stars, setStars] = useState(0);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit() {
+    if (!stars || busy) return;
+    setBusy(true);
+    await onSubmit({ stars, comment: comment.trim() });
+    setBusy(false);
+  }
+  return (
+    <Card className="ring-2 ring-amber-200">
+      <h3 className="text-lg font-semibold">{title}</h3>
+      <p className="mt-1 text-sm text-slate-600">Your rating is shown with this case and counts toward the officer's record.</p>
+      <div className="mt-4"><StarPicker value={stars} onChange={setStars} /></div>
+      <label htmlFor="rate-comment" className="mt-4 block text-sm font-medium">Comment <span className="font-normal text-slate-500">(optional)</span></label>
+      <textarea
+        id="rate-comment" rows={2} value={comment} maxLength={240} onChange={(e) => setComment(e.target.value)}
+        placeholder="e.g. Quick and thorough. The area is spotless."
+        className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-400/30"
+      />
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row-reverse">
+        <button
+          type="button" onClick={submit} disabled={!stars || busy}
+          className="flex-1 rounded-xl bg-emerald-700 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          {busy ? "Saving…" : stars ? `${submitLabel} · ${stars}★ ${RATING_WORDS[stars]}` : "Choose a rating first"}
+        </button>
+        {onCancel && (
+          <button type="button" onClick={onCancel} className="rounded-xl px-4 py-3 text-sm font-medium text-slate-600 ring-1 ring-slate-300 hover:bg-slate-50">Back</button>
+        )}
+      </div>
     </Card>
   );
 }
