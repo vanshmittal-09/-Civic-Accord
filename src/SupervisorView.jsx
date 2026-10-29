@@ -5,7 +5,7 @@ import { useState, useMemo, useEffect } from "react";
 import { STATES, CLOSED_STATES, AUTO_CLOSE_MS, PEOPLE, useCivicLedger, useNow, verifyLedger } from "./civicLedger";
 import {
   dur, ago, stamp, StatusBadge, Icon, Card, ProofCard, Timeline, ComplaintPhotos,
-  TopBar, AccessDenied, SiteFooter, LedgerBar, StarRating, RatingCard, averageRating, CaseTimer,
+  TopBar, AccessDenied, SiteFooter, LedgerBar, openPhotoViewer, StarRating, RatingCard, averageRating, CaseTimer,
 } from "./shared";
 import { assessPhoto, detectAiOnline, ONLINE_AI_CHECK } from "./imageCheck";
 
@@ -249,7 +249,7 @@ function CaseDetail({ c, now, onRule }) {
               <Card>
                 <h4 className="text-sm font-semibold">1 · Original complaint</h4>
                 <p className="text-xs text-slate-500">{c.citizenName} · {stamp(c.submittedAt)}</p>
-                <div className="mt-3"><ComplaintPhotos c={c} /></div>
+                <div className="mt-3 max-w-[12rem]"><ComplaintPhotos c={c} /></div>
                 <p className="mt-3 text-sm leading-relaxed text-slate-700">{c.description}</p>
               </Card>
               <ProofCard title="2 · Officer's proof" proof={c.proposal} at={c.proposedAt} />
@@ -351,7 +351,7 @@ function ReadOnlyPanel({ c, now }) {
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <h4 className="text-sm font-semibold">Original complaint</h4>
-          <div className="mt-3 max-w-sm"><ComplaintPhotos c={c} /></div>
+          <div className="mt-3 max-w-[12rem]"><ComplaintPhotos c={c} /></div>
           <p className="mt-3 text-sm text-slate-700">{c.description}</p>
         </Card>
         <ProofCard title="Officer's proof" proof={c.proposal} at={c.proposedAt} />
@@ -421,7 +421,9 @@ function PhotoCheck({ c }) {
             const o = online[i];
             return (
               <li key={i} className="flex gap-3 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
-                <img src={p.src} alt={label} className="h-16 w-20 shrink-0 rounded-lg object-cover ring-1 ring-slate-200" />
+                <button type="button" onClick={() => openPhotoViewer(photos.map((x) => x.p), i, "Photos in this case")} aria-label={`View ${label} full screen`} className="shrink-0 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500">
+                  <img src={p.src} alt={label} className="h-16 w-20 rounded-lg object-cover ring-1 ring-slate-200 hover:brightness-90" />
+                </button>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-semibold">{label}</span>

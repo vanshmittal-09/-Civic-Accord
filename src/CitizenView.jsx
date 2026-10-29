@@ -400,7 +400,7 @@ function CaseDetail({ c, now, act }) {
           </div>
           <StatusBadge state={c.state} label={RESIDENT_LABEL[c.state]} />
         </div>
-        <div className="mt-4 grid gap-4 sm:grid-cols-[200px_1fr]">
+        <div className="mt-4 grid gap-4 sm:grid-cols-[150px_1fr]">
           <ComplaintPhotos c={c} />
           <div>
             <p className="text-xs text-slate-500">You reported this · {stamp(c.submittedAt)}</p>
@@ -496,11 +496,11 @@ function ResolvedShowcase({ cases }) {
             <article key={c.id} className="flex flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
               <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1">
                 <div className="relative">
-                  {before ? <EvidencePhoto photo={before} alt={`Before: ${c.title}`} hideSampleTag /> : <div className="aspect-[4/3] rounded-xl bg-slate-200" />}
+                  {before ? <EvidencePhoto photo={before} alt={`Before: ${c.title}`} hideSampleTag gallery={[before, after].filter(Boolean)} index={0} title={`#${c.id} ${c.title}: before and after`} /> : <div className="aspect-[4/3] rounded-xl bg-slate-200" />}
                   <span className="absolute left-2 top-2 rounded-md bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">Before</span>
                 </div>
                 <div className="relative">
-                  {after ? <EvidencePhoto photo={after} alt={`After: ${c.title}`} hideSampleTag /> : <div className="aspect-[4/3] rounded-xl bg-slate-200" />}
+                  {after ? <EvidencePhoto photo={after} alt={`After: ${c.title}`} hideSampleTag gallery={[before, after].filter(Boolean)} index={before ? 1 : 0} title={`#${c.id} ${c.title}: before and after`} /> : <div className="aspect-[4/3] rounded-xl bg-slate-200" />}
                   <span className="absolute left-2 top-2 rounded-md bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">After</span>
                 </div>
               </div>

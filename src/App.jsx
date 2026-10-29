@@ -7,7 +7,7 @@ import { useState, useEffect } from "react";
 import CitizenView from "./CitizenView";
 import OfficerView from "./OfficerView";
 import SupervisorView from "./SupervisorView";
-import { Logo, SiteFooter } from "./shared";
+import { Logo, SiteFooter, PhotoViewer } from "./shared";
 import { registerResident, verifyResident, normalizeMobile, isValidMobile, isValidEmail, isValidPincode, DEMO_RESIDENT } from "./accounts";
 
 const SESSION_KEY = "civicaccord_session_v2";
@@ -70,7 +70,12 @@ export default function App() {
   // Each screen checks the role itself, so asking for someone else's screen
   // renders "Access denied", not their data.
   const View = VIEWS[route] || VIEWS[session.route];
-  return <View session={session} onSignOut={signOut} />;
+  return (
+    <>
+      <View session={session} onSignOut={signOut} />
+      <PhotoViewer />
+    </>
+  );
 }
 
 /* ---------------- shared bits ---------------- */

@@ -153,13 +153,13 @@ export function ProofCard({ title, proof, at, tone = "officer" }) {
       <h4 className="text-sm font-semibold text-slate-900">{title}</h4>
       {at && <p className="text-xs text-slate-500">{stamp(at)}</p>}
       {proof.photos && proof.photos.length > 0 ? (
-        <div className={`mt-3 grid gap-2 ${proof.photos.length > 1 ? "max-w-md grid-cols-2" : "max-w-sm"}`}>
+        <div className={`mt-3 grid gap-2 ${proof.photos.length > 1 ? "max-w-md grid-cols-3 sm:grid-cols-4" : "max-w-[12rem]"}`}>
           {proof.photos.map((ph, i) => (
-            <EvidencePhoto key={i} photo={ph} alt={`${title} ${i + 1}`} />
+            <EvidencePhoto key={i} photo={ph} alt={`${title} ${i + 1}`} gallery={proof.photos} index={i} title={title} compact />
           ))}
         </div>
       ) : (
-        <div className="mt-3 max-w-sm"><PhotoBox src={proof.photo} label={proof.photoLabel} tone={tone} /></div>
+        <div className="mt-3 max-w-[11rem]"><PhotoBox src={proof.photo} label={proof.photoLabel} tone={tone} /></div>
       )}
       {proof.checklist?.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -204,7 +204,7 @@ export function ComplaintPhotos({ c }) {
     return (
       <div className={`grid gap-2 ${c.photos.length > 1 ? "grid-cols-2" : ""}`}>
         {c.photos.map((ph, i) => (
-          <EvidencePhoto key={i} photo={ph} alt={`Complaint photo ${i + 1}`} />
+          <EvidencePhoto key={i} photo={ph} alt={`Complaint photo ${i + 1}`} gallery={c.photos} index={i} title="Complaint photos" compact={c.photos.length > 1} />
         ))}
       </div>
     );
@@ -254,10 +254,12 @@ export function PhotoPicker({ photos, onChange, max = MAX_PHOTOS, prompt = "Take
         </label>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="grid max-w-lg grid-cols-3 gap-2 sm:grid-cols-4">
             {photos.map((ph, i) => (
               <figure key={ph.id} className="relative">
-                <img src={ph.src} alt={`Photo ${i + 1}`} className="aspect-[4/3] w-full rounded-xl object-cover ring-1 ring-slate-200" />
+                <button type="button" onClick={() => openPhotoViewer(photos, i, "Your photos")} aria-label={`View photo ${i + 1} full screen`} className="block w-full rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+                  <img src={ph.src} alt={`Photo ${i + 1}`} className="aspect-[4/3] w-full rounded-xl object-cover ring-1 ring-slate-200" />
+                </button>
                 <button
                   type="button"
                   onClick={() => onChange(photos.filter((x) => x.id !== ph.id))}
@@ -472,16 +474,104 @@ export function ProfileMenu({ session, onSignOut, textClass = "text-slate-900", 
 }
 
 /** One evidence photo. Demo-data illustrations get a small "Sample image" tag. */
-export function EvidencePhoto({ photo, alt, hideSampleTag = false }) {
+export function EvidencePhoto({ photo, alt, hideSampleTag = false, gallery, index = 0, title = "", compact = false }) {
+  const list = gallery && gallery.length ? gallery : [photo];
   return (
     <figure className="relative">
-      <img src={photo.src} alt={alt} className="aspect-[4/3] w-full rounded-xl object-cover ring-1 ring-slate-200" />
+      <button
+        type="button"
+        onClick={() => openPhotoViewer(list, gallery ? index : 0, title || alt)}
+        aria-label={`View ${alt} full screen`}
+        className="group relative block w-full overflow-hidden rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      >
+        <img src={photo.src} alt={alt} className="aspect-[4/3] w-full rounded-xl object-cover ring-1 ring-slate-200 transition group-hover:brightness-90" />
+        <span className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true">
+          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+        </span>
+      </button>
       {photo.sample && !hideSampleTag && (
-        <figcaption className="absolute bottom-2 left-2 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
-          Sample image
+        <figcaption className={`pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-black/55 font-medium uppercase tracking-wide text-white ${compact ? "px-1 py-px text-[8px]" : "px-1.5 py-0.5 text-[10px]"}`}>
+          Sample
         </figcaption>
       )}
     </figure>
+  );
+}
+
+/* ---------------- full-screen photo viewer ---------------- */
+/** Opens the full-screen viewer from anywhere in the app. */
+export function openPhotoViewer(photos, index = 0, title = "") {
+  const list = (photos || []).filter((p) => p && p.src);
+  if (!list.length) return;
+  window.dispatchEvent(new CustomEvent("civic:photo-viewer", { detail: { photos: list, index: Math.min(index, list.length - 1), title } }));
+}
+
+/** Mount once (in App). Shows photos full screen: arrows / swipe to move, Esc or × to close. */
+export function PhotoViewer() {
+  const [view, setView] = useState(null);
+  const closeRef = useRef(null);
+  const touch = useRef(null);
+
+  useEffect(() => {
+    const onOpen = (e) => setView(e.detail);
+    window.addEventListener("civic:photo-viewer", onOpen);
+    return () => window.removeEventListener("civic:photo-viewer", onOpen);
+  }, []);
+
+  const count = view ? view.photos.length : 0;
+  const go = (d) => setView((v) => (v ? { ...v, index: (v.index + d + v.photos.length) % v.photos.length } : v));
+
+  useEffect(() => {
+    if (!view) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setView(null);
+      else if (e.key === "ArrowRight") go(1);
+      else if (e.key === "ArrowLeft") go(-1);
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    if (closeRef.current) closeRef.current.focus();
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [view ? view.title : null, count]);
+
+  if (!view) return null;
+  const photo = view.photos[view.index];
+  const navBtn = "absolute top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-2xl text-white hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-white";
+
+  return (
+    <div
+      role="dialog" aria-modal="true" aria-label={view.title || "Photo"}
+      className="fixed inset-0 z-[60] flex flex-col bg-black"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) setView(null); }}
+      onTouchStart={(e) => { touch.current = e.touches[0].clientX; }}
+      onTouchEnd={(e) => {
+        if (touch.current == null || count < 2) return;
+        const dx = e.changedTouches[0].clientX - touch.current;
+        if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+        touch.current = null;
+      }}
+    >
+      <div className="flex items-center gap-3 px-4 pb-2 pt-[max(0.75rem,env(safe-area-inset-top))] text-white">
+        <p className="min-w-0 flex-1 truncate text-sm font-medium">
+          {view.title}{count > 1 ? ` · ${view.index + 1} of ${count}` : ""}
+        </p>
+        <button ref={closeRef} type="button" onClick={() => setView(null)} aria-label="Close photo" className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-2xl leading-none hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-white">×</button>
+      </div>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center px-2 pb-[max(1rem,env(safe-area-inset-bottom))]" onMouseDown={(e) => { if (e.target === e.currentTarget) setView(null); }}>
+        <img src={photo.src} alt={`${view.title} ${view.index + 1}`} className="h-full w-full object-contain" />
+        {photo.sample && <span className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-black/60 px-2 py-0.5 text-xs uppercase tracking-wide text-white">Sample illustration</span>}
+        {count > 1 && (
+          <>
+            <button type="button" onClick={() => go(-1)} aria-label="Previous photo" className={`${navBtn} left-3`}>‹</button>
+            <button type="button" onClick={() => go(1)} aria-label="Next photo" className={`${navBtn} right-3`}>›</button>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

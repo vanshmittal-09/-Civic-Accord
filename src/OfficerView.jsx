@@ -8,7 +8,7 @@ import {
 } from "./civicLedger";
 import {
   STATUS_META, EVENT_LABEL, CHECKS, CHECK_LABEL, dur, ago, stamp, queueMeta, stripAndCompress,
-  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, RatingCard, averageRating, StarRating, CaseTimer,
+  StatusBadge, Icon, PhotoBox, Chip, Card, ProofCard, Timeline, ComplaintPhotos, AccessDenied, ProfileMenu, Logo, SiteFooter, openPhotoViewer, RatingCard, averageRating, StarRating, CaseTimer,
 } from "./shared";
 import { readPhotoSignals } from "./imageCheck";
 
@@ -102,10 +102,12 @@ function ProposalForm({ c, now, onSubmit, isRework }) {
             </label>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div className="grid max-w-lg grid-cols-3 gap-2 sm:grid-cols-4">
                 {photos.map((ph, i) => (
                   <figure key={ph.id} className="relative">
-                    <img src={ph.src} alt={`Completion proof ${i + 1}`} className="aspect-[4/3] w-full rounded-xl object-cover ring-1 ring-slate-200" />
+                    <button type="button" onClick={() => openPhotoViewer(photos, i, "Your completion photos")} aria-label={`View photo ${i + 1} full screen`} className="block w-full rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+                      <img src={ph.src} alt={`Completion proof ${i + 1}`} className="aspect-[4/3] w-full rounded-xl object-cover ring-1 ring-slate-200" />
+                    </button>
                     <button
                       type="button"
                       onClick={() => setPhotos((ps) => ps.filter((x) => x.id !== ph.id))}
@@ -306,7 +308,7 @@ function CaseDetail({ c, now, onPropose }) {
           </div>
           <StatusBadge state={c.state} />
         </div>
-        <div className="mt-4 grid gap-4 sm:grid-cols-[180px_1fr]">
+        <div className="mt-4 grid gap-4 sm:grid-cols-[150px_1fr]">
           <ComplaintPhotos c={c} />
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Reported by {c.citizenName}</p>
